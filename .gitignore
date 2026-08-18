@@ -10,5 +10,7 @@ generated/*.png
 data/certificates.json
 data/sft.db
 data/*.db
+data/*.sqlite
+data/*.sqlite3
 frontend/node_modules/
 

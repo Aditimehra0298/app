@@ -40,6 +40,25 @@ def get_database_url() -> str:
     return os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL).strip()
 
 
+def uses_sqlite() -> bool:
+    url = get_database_url().strip().lower()
+    flag = os.environ.get("USE_SQLITE", "").strip().lower()
+    if flag in {"1", "true", "yes"}:
+        return True
+    return url.startswith("sqlite:")
+
+
+def _sqlite_path() -> Path:
+    url = get_database_url().strip()
+    if url.startswith("sqlite:///"):
+        raw = url[len("sqlite:///") :]
+        path = Path(raw)
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        return path
+    return BASE_DIR / "data" / "sft.sqlite"
+
+
 def get_lms_database_url() -> str:
     """Official SFT LMS MySQL. Same server, different database is typical."""
     return os.environ.get("LMS_DATABASE_URL", "").strip()
@@ -105,9 +124,33 @@ SCHEMA_STATEMENTS = [
         UNIQUE KEY uq_students_uid (uid),
         KEY idx_students_uid (uid),
         KEY idx_students_cert (certificate_number)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    )     ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
 ]
+
+SQLITE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS students (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    father_name TEXT NOT NULL DEFAULT '',
+    course_name TEXT NOT NULL,
+    batch_start TEXT NULL,
+    batch_end TEXT NULL,
+    uid TEXT NOT NULL UNIQUE,
+    certificate_number TEXT NULL,
+    issue_date TEXT NULL,
+    image_path TEXT NULL,
+    logo_path TEXT NULL,
+    phone TEXT DEFAULT '',
+    email TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'admitted',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    videos_completed_at TEXT NULL,
+    assessment_completed_at TEXT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_students_cert ON students(certificate_number);
+CREATE INDEX IF NOT EXISTS idx_students_email ON students(email);
+"""
 
 SEED_STUDENTS = [
     {
@@ -194,8 +237,81 @@ def get_lms_connection():
         conn.close()
 
 
+class _SqliteCursor:
+    def __init__(self, conn: "sqlite3.Connection"):
+        self._cur = conn.cursor()
+
+    def execute(self, sql: str, params=None):
+        converted = sql.replace("%s", "?")
+        if params is None:
+            self._cur.execute(converted)
+        else:
+            self._cur.execute(converted, tuple(params))
+        return self
+
+    def fetchone(self):
+        row = self._cur.fetchone()
+        if row is None:
+            return None
+        return {key: row[key] for key in row.keys()}
+
+    def fetchall(self):
+        return [{key: row[key] for key in row.keys()} for row in self._cur.fetchall()]
+
+    def close(self):
+        self._cur.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+
+class _SqliteConn:
+    def __init__(self, path: Path):
+        import sqlite3
+
+        self._conn = sqlite3.connect(str(path), check_same_thread=False, timeout=30)
+        self._conn.row_factory = sqlite3.Row
+
+        def regexp(pattern: str, value) -> int:
+            if value is None:
+                return 0
+            return 1 if re.search(pattern, str(value)) else 0
+
+        self._conn.create_function("REGEXP", 2, regexp)
+
+    def cursor(self):
+        return _SqliteCursor(self._conn)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+
 @contextmanager
 def get_connection():
+    if uses_sqlite():
+        path = _sqlite_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = _SqliteConn(path)
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return
+
     import pymysql
     from pymysql.cursors import DictCursor
 
@@ -220,22 +336,32 @@ def get_connection():
         conn.close()
 
 
+def _has_column(cur, name: str) -> bool:
+    if uses_sqlite():
+        cur.execute("PRAGMA table_info(students)")
+        return any(str(row.get("name") or "").lower() == name.lower() for row in (cur.fetchall() or []))
+    cur.execute("SHOW COLUMNS FROM students LIKE %s", (name,))
+    return cur.fetchone() is not None
+
+
 def init_db() -> None:
     with get_connection() as conn:
         with conn.cursor() as cur:
-            for statement in SCHEMA_STATEMENTS:
-                cur.execute(statement)
-            cur.execute("SHOW COLUMNS FROM students LIKE 'logo_path'")
-            if not cur.fetchone():
-                cur.execute("ALTER TABLE students ADD COLUMN logo_path VARCHAR(512) NULL AFTER image_path")
-            cur.execute("SHOW COLUMNS FROM students LIKE 'email'")
-            if not cur.fetchone():
-                cur.execute("ALTER TABLE students ADD COLUMN email VARCHAR(255) DEFAULT '' AFTER phone")
-            cur.execute("SHOW COLUMNS FROM students LIKE 'videos_completed_at'")
-            if not cur.fetchone():
+            if uses_sqlite():
+                for statement in SQLITE_SCHEMA.split(";"):
+                    sql = statement.strip()
+                    if sql:
+                        cur.execute(sql)
+            else:
+                for statement in SCHEMA_STATEMENTS:
+                    cur.execute(statement)
+            if not _has_column(cur, "logo_path"):
+                cur.execute("ALTER TABLE students ADD COLUMN logo_path VARCHAR(512) NULL")
+            if not _has_column(cur, "email"):
+                cur.execute("ALTER TABLE students ADD COLUMN email VARCHAR(255) DEFAULT ''")
+            if not _has_column(cur, "videos_completed_at"):
                 cur.execute("ALTER TABLE students ADD COLUMN videos_completed_at DATETIME NULL")
-            cur.execute("SHOW COLUMNS FROM students LIKE 'assessment_completed_at'")
-            if not cur.fetchone():
+            if not _has_column(cur, "assessment_completed_at"):
                 cur.execute("ALTER TABLE students ADD COLUMN assessment_completed_at DATETIME NULL")
             _migrate_legacy_uids(cur)
             _migrate_certificate_numbers(cur)
@@ -278,6 +404,8 @@ def _ensure_plumbing_course(cur) -> tuple[str, str]:
 
 def init_lms_bridge() -> None:
     """Connect the SFT LMS MySQL (`sft_lms`) and copy issued plumbing certificates into it."""
+    if uses_sqlite() and not get_lms_database_url():
+        return
     cfg = _lms_connect_kwargs()
     if not cfg:
         return
