@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="{{ brand.theme_color }}">
+  <meta name="color-scheme" content="light">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="{{ brand.short_name }}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="format-detection" content="telephone=no">
+  <meta name="description" content="Sustainable Futures trade assessment and certification programme">
+  <title>{{ brand.name }} — {{ brand.tagline }}</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
+  <link rel="apple-touch-startup-image" href="/static/icons/splash-1125.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <div class="splash" id="splash">
+      <img class="splash-bg" src="/static/images/splash-forest.jpg" alt="">
+      <div class="splash-veil"></div>
+      <div class="splash-content">
+        <div class="splash-mark">
+          <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="22" stroke="currentColor" stroke-width="2"/><circle cx="24" cy="24" r="8" fill="currentColor"/></svg>
+        </div>
+        <div class="splash-title">{{ brand.name }}</div>
+        <div class="splash-sub">{{ brand.tagline }}</div>
+        <div class="splash-powered">Powered by {{ brand.powered_by }}</div>
+      </div>
+    </div>
+
+    <div class="install-banner" id="installBanner" hidden>
+      <span id="installText">Install {{ brand.short_name }} on your phone</span>
+      <button type="button" class="install-btn" id="btnInstall">Install</button>
+      <button type="button" class="install-dismiss" id="btnDismissInstall" aria-label="Dismiss">✕</button>
+    </div>
+    <div class="ios-sheet" id="iosInstallSheet" hidden>
+      <div class="ios-sheet-card">
+        <h3>Add to Home Screen</h3>
+        <p>On iPhone / iPad (Safari):</p>
+        <ol>
+          <li>Tap <strong>Share</strong> <span class="ios-share-icon">⎋</span></li>
+          <li>Tap <strong>Add to Home Screen</strong></li>
+          <li>Tap <strong>Add</strong></li>
+        </ol>
+        <button type="button" class="btn btn-primary btn-block" id="btnCloseIosSheet">Got it</button>
+      </div>
+    </div>
+
+    <header class="app-header">
+      <div class="header-row">
+        <div class="logo">
+          <span class="logo-mark" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="4" fill="currentColor"/></svg>
+          </span>
+          <div class="logo-text-wrap">
+            <span class="logo-text">{{ brand.name }}</span>
+            <span class="logo-tag">{{ brand.tagline }}</span>
+          </div>
+        </div>
+        <div class="header-step" id="headerStep" hidden>
+          <span id="headerStepLabel">Step 1/3</span>
+        </div>
+      </div>
+      <div class="step-track" id="stepTrack" hidden>
+        <div class="step-track-fill" id="stepTrackFill"></div>
+      </div>
+    </header>
+
+    <main class="app-content" id="appContent">
+
+      <section class="screen active" id="screenHome" data-screen="home">
+        <div class="screen-scroll no-pad-top">
+          <div class="hero-photo">
+            <img src="/static/images/hero-landscape.jpg" alt="Renewable energy landscape">
+            <div class="hero-photo-overlay">
+              <span class="hero-badge">Accredited Programme</span>
+              <h1 class="screen-title display light">Sustainable Futures<br>Trade Assessment</h1>
+              <p class="hero-lead">Verified video evidence · Trade competency · Accredited certificate</p>
+            </div>
+          </div>
+
+          <div class="home-body">
+          <form id="registerForm" class="form card-panel">
+            <label class="field">
+              <span>Participant Name</span>
+              <input type="text" id="candidateName" placeholder="Full legal name" required minlength="2" autocomplete="name">
+            </label>
+            <label class="field">
+              <span>Training Programme</span>
+              <select id="courseName">
+                <optgroup label="Sustainable Futures Programmes">
+                  {% for course in courses[:7] %}
+                  <option value="{{ course.courseName }}" {% if course.courseName == default_course %}selected{% endif %}>
+                    {{ course.courseName }}
+                  </option>
+                  {% endfor %}
+                </optgroup>
+                {% if courses|length > 7 %}
+                <optgroup label="Other Programmes">
+                  {% for course in courses[7:] %}
+                  <option value="{{ course.courseName }}">{{ course.courseName }}</option>
+                  {% endfor %}
+                </optgroup>
+                {% endif %}
+              </select>
+            </label>
+          </form>
+
+          <div class="journey-card card-panel">
+            <div class="panel-head">
+              <h3>Assessment Pathway</h3>
+              <span class="panel-meta">{{ steps|length }} modules · {{ questions|length }} questions</span>
+            </div>
+            <div class="pathway-grid">
+              {% set thumbs = [
+                '/static/images/module-foundations.jpg',
+                '/static/images/module-trade.jpg',
+                '/static/images/module-verify.jpg'
+              ] %}
+              {% for step in steps %}
+              <div class="pathway-card">
+                <img src="{{ thumbs[loop.index0] }}" alt="{{ step.title }}">
+                <div class="pathway-card-body">
+                  <span class="pathway-num">Module {{ step.icon or step.id }}</span>
+                  <strong>{{ step.title.split('—')[-1].strip() if '—' in step.title else step.title }}</strong>
+                  <span>Video evidence · 1–2 min</span>
+                </div>
+              </div>
+              {% endfor %}
+              <div class="pathway-card">
+                <img src="/static/images/assessment-desk.jpg" alt="Trade assessment">
+                <div class="pathway-card-body">
+                  <span class="pathway-num">Assessment</span>
+                  <strong>{{ assessment_title }}</strong>
+                  <span>{{ questions|length }} questions · {{ pass_percentage }}% pass</span>
+                </div>
+              </div>
+              <div class="pathway-card">
+                <img src="/static/images/certificate-still.jpg" alt="Accredited certificate">
+                <div class="pathway-card-body">
+                  <span class="pathway-num">Certificate</span>
+                  <strong>Accredited Certificate</strong>
+                  <span>QR verify · download & share</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p class="footer-note">Certified by {{ brand.powered_by }} · Sustainable trade & reporting standards</p>
+          </div>
+        </div>
+        <div class="screen-footer">
+          <button type="button" class="btn btn-primary btn-block" id="btnStart">Begin Assessment Pathway</button>
+        </div>
+      </section>
+
+      <section class="screen" id="screenTraining" data-screen="training" hidden>
+        <div class="screen-scroll no-pad-top">
+          <div class="module-hero">
+            <img id="moduleHeroImg" src="/static/images/module-foundations.jpg" alt="">
+            <div class="module-hero-overlay">
+              <div class="step-pill" id="stepPill">Module 1 of 3</div>
+              <h2 class="screen-title light" id="stepTitle"></h2>
+            </div>
+          </div>
+          <div class="home-body">
+          <p class="screen-sub" id="stepDescription"></p>
+
+          <div class="video-card card-panel">
+            <div class="panel-head compact">
+              <h3>Video Evidence</h3>
+              <span class="panel-meta">Required · 1:00–2:00</span>
+            </div>
+            <div class="video-container" id="videoContainer">
+              <video id="previewVideo" playsinline webkit-playsinline muted></video>
+              <div class="video-overlay" id="videoPlaceholder">
+                <div class="rec-icon">
+                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+                </div>
+                <p>Record your module evidence<br><small>Minimum 1 minute · maximum 2 minutes</small></p>
+              </div>
+            </div>
+            <div class="rec-timer" id="timer" hidden>
+              <span class="rec-dot"></span>
+              <span id="timerText">0:00</span>
+            </div>
+            <div class="rec-controls">
+              <button type="button" class="rec-btn record" id="btnRecord" aria-label="Record">
+                <svg width="28" height="28" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="currentColor"/></svg>
+              </button>
+              <button type="button" class="rec-btn stop" id="btnStop" hidden aria-label="Stop">
+                <svg width="28" height="28" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" fill="currentColor" rx="2"/></svg>
+              </button>
+              <label class="rec-btn camera" id="iosCameraBtn" hidden aria-label="Open camera">
+                <svg width="28" height="28" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="currentColor"/></svg>
+                <input type="file" id="cameraCapture" accept="video/*" capture="environment" hidden>
+              </label>
+              <label class="rec-btn upload" aria-label="Upload from gallery">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <input type="file" id="fileUpload" accept="video/mp4,video/quicktime,video/*,.mp4,.mov,.webm,.m4v" hidden>
+              </label>
+            </div>
+            <p class="rec-hint" id="recHint">Record 1–2 minutes of evidence, then submit.</p>
+            <p class="error-msg" id="videoError" hidden></p>
+          </div>
+          <div class="done-list" id="completedStepsList"></div>
+          </div>
+        </div>
+        <div class="screen-footer">
+          <button type="button" class="btn btn-primary btn-block" id="btnSubmitStep" disabled>Submit Module Evidence</button>
+        </div>
+      </section>
+
+      <section class="screen" id="screenAssessment" data-screen="assessment" hidden>
+        <div class="screen-scroll no-pad-top">
+          <div class="module-hero compact">
+            <img src="/static/images/assessment-desk.jpg" alt="Trade competency assessment">
+            <div class="module-hero-overlay">
+              <div class="step-pill assessment">Trade Assessment</div>
+              <h2 class="screen-title light">{{ assessment_title }}</h2>
+            </div>
+          </div>
+          <div class="home-body">
+          <p class="screen-sub">{{ assessment_subtitle }}</p>
+          <div class="assessment-meta card-panel">
+            <div><strong>{{ questions|length }}</strong><span>Questions</span></div>
+            <div><strong>{{ pass_percentage }}%</strong><span>Pass mark</span></div>
+            <div><strong>Proctored</strong><span>Self-assessment</span></div>
+          </div>
+
+          <form id="assessmentForm" class="assessment-form">
+            {% for q in questions %}
+            <div class="quiz-card card-panel" data-qid="{{ q.id }}">
+              <p class="quiz-q"><span class="q-num">Q{{ loop.index }}</span> {{ q.question }}</p>
+              {% for opt in q.options %}
+              <label class="quiz-opt">
+                <input type="radio" name="{{ q.id }}" value="{{ loop.index0 }}" required>
+                <span class="quiz-opt-box"></span>
+                <span>{{ opt }}</span>
+              </label>
+              {% endfor %}
+            </div>
+            {% endfor %}
+          </form>
+          <div id="assessmentResult" class="result-banner" hidden></div>
+          </div>
+        </div>
+        <div class="screen-footer">
+          <button type="button" class="btn btn-primary btn-block" id="btnSubmitAssessment">Submit Trade Assessment</button>
+        </div>
+      </section>
+
+      <section class="screen" id="screenCertificate" data-screen="certificate" hidden>
+        <div class="screen-scroll no-pad-top">
+          <div class="module-hero">
+            <img src="/static/images/certificate-still.jpg" alt="Accredited certificate">
+            <div class="module-hero-overlay">
+              <div class="cert-seal">◆</div>
+              <h2 class="screen-title display light">Certificate Issued</h2>
+            </div>
+          </div>
+          <div class="home-body">
+          <p class="screen-sub" id="certSubtitle">You have successfully completed the Sustainable Futures trade assessment.</p>
+          <div class="cert-card card-panel" id="certDetails"></div>
+          <div class="qr-card card-panel">
+            <p class="qr-label">Verified Certificate QR</p>
+            <p class="qr-sub">Scan to verify, download, and share your accredited certificate</p>
+            <div class="qr-frame">
+              <img id="qrImage" alt="Certificate QR Code" width="180" height="180">
+            </div>
+          </div>
+          </div>
+        </div>
+        <div class="screen-footer cert-footer">
+          <a id="btnDownload" class="btn btn-primary btn-block" href="#" target="_blank" rel="noopener">Download Certificate</a>
+          <button type="button" class="btn btn-secondary btn-block" id="btnShare">Share Certificate</button>
+        </div>
+      </section>
+    </main>
+
+    <nav class="tab-bar" id="tabBar">
+      <button type="button" class="tab active" data-tab="home">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+        <span>Home</span>
+      </button>
+      <button type="button" class="tab" data-tab="training">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+        <span>Modules</span>
+      </button>
+      <button type="button" class="tab" data-tab="assessment">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+        <span>Assessment</span>
+      </button>
+      <button type="button" class="tab" data-tab="certificate">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89L17 22l-5-3-5 3 1.523-9.11"/></svg>
+        <span>Certificate</span>
+      </button>
+    </nav>
+  </div>
+
+  <script>
+    window.APP_CONFIG = {
+      brand: {{ brand | tojson }},
+      steps: {{ steps | tojson }},
+      passPercentage: {{ pass_percentage }},
+      questionCount: {{ questions | length }}
+    };
+  </script>
+  <script src="/static/js/app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(function(){});
+    }
+  </script>
+</body>
+</html>

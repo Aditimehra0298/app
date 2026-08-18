@@ -1,0 +1,40 @@
+{
+  "steps": [
+    {
+      "id": 1,
+      "title": "Week 1 - Plumbing Basics and Tools",
+      "description": "Record practical activities for introduction to plumbing trade, safety and PPE, plumbing tools, pipe types and sizes, basic marking and measurement, and basic pipe fittings.",
+      "min_seconds": 60,
+      "max_seconds": 120,
+      "icon": "01",
+      "image": "/static/images/week1-plumbing-tools.jpg"
+    },
+    {
+      "id": 2,
+      "title": "Week 2 - Pipe Fitting and Water Supply",
+      "description": "Record practicals for GI/PVC/CPVC pipe practice, threading and solvent joints, valves and taps, water supply layout, and leakage checking.",
+      "min_seconds": 60,
+      "max_seconds": 120,
+      "icon": "02",
+      "image": "/static/images/week2-pipe-fitting.jpg"
+    },
+    {
+      "id": 3,
+      "title": "Week 3 - Sanitary and Drainage Systems",
+      "description": "Record installation practicals for sanitary fixtures, wash basin and WC installation basics, sink and health faucet, traps and waste pipes, drainage layout and slope practice.",
+      "min_seconds": 60,
+      "max_seconds": 120,
+      "icon": "03",
+      "image": "/static/images/week3-sanitary-drainage.jpg"
+    },
+    {
+      "id": 4,
+      "title": "Week 4 - Final Practical and Testing",
+      "description": "Record final practical activities including complete water supply and drainage connection, fixture alignment, pressure testing, leak testing, and final practical job task assessment.",
+      "min_seconds": 60,
+      "max_seconds": 120,
+      "icon": "04",
+      "image": "/static/images/week4-final-testing.jpg"
+    }
+  ]
+}

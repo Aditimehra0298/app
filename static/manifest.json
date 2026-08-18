@@ -1,0 +1,41 @@
+{
+  "name": "SFT Global Skills & Trade Assessment Council",
+  "short_name": "SFT",
+  "description": "Assessing Skills. Validating Competence.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "fullscreen", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#052e22",
+  "theme_color": "#0d4f3c",
+  "lang": "en",
+  "icons": [
+    { "src": "/static/icons/icon-180.png", "sizes": "180x180", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "categories": ["education", "business"],
+  "prefer_related_applications": false,
+  "screenshots": [
+    {
+      "src": "/static/images/hero-landscape.jpg",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "SFT training home"
+    },
+    {
+      "src": "/static/images/week1-plumbing-tools.jpg",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Pathway week 1"
+    },
+    {
+      "src": "/static/images/certificate-still.jpg",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "Certificate"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+.venv
+.git
+__pycache__
+**/__pycache__
+**/*.pyc
+frontend/node_modules
+frontend/dist
+uploads
+generated/*.pdf
+.env
+.DS_Store
+*.md
+agent-transcripts

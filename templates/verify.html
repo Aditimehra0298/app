@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="{{ brand.theme_color }}">
+  <title>Verify Certificate — {{ brand.name }}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="verify-page">
+  <div class="app-shell">
+    <main class="verify-main">
+      <div class="card-verify">
+        {% if found %}
+        <img class="verify-hero" src="/static/images/certificate-still.jpg" alt="">
+        <div style="padding: 1.5rem 1.35rem 2rem">
+        <div class="verify-badge valid">✓ Verified Certificate</div>
+        <h1 style="font-family:var(--font-display);font-size:1.35rem;color:var(--primary);margin-bottom:0.25rem">{{ cert.candidateName }}</h1>
+        <p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:1.25rem;line-height:1.4">{{ cert.courseName }}</p>
+        <dl class="verify-details">
+          <div><dt>Certificate ID</dt><dd>{{ cert.certificateId }}</dd></div>
+          <div><dt>Assessment Grade</dt><dd>{{ cert.grade }}</dd></div>
+          <div><dt>Certificate No.</dt><dd>{{ cert.certificateNumber }}</dd></div>
+          <div><dt>Issue Date</dt><dd>{{ cert.issueDate }}</dd></div>
+        </dl>
+        <a href="{{ pdf_url }}" class="btn btn-primary btn-block">Download Certificate</a>
+        <p style="font-size:0.7rem;color:var(--text-muted);margin-top:1rem">Certified by {{ brand.powered_by }}</p>
+        </div>
+        {% else %}
+        <div style="padding: 2rem 1.35rem">
+        <div class="verify-badge invalid">✗ Not Found</div>
+        <h1 style="font-size:1.15rem;color:var(--primary)">Certificate Not Found</h1>
+        <p style="color:var(--text-muted);font-size:0.85rem;margin:0.75rem 0">ID: {{ cert_id }}</p>
+        <a href="/" class="btn btn-secondary btn-block">Open {{ brand.short_name }}</a>
+        </div>
+        {% endif %}
+      </div>
+    </main>
+  </div>
+</body>
+</html>

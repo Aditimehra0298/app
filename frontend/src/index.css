@@ -1,0 +1,185 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-display: "Plus Jakarta Sans", "Inter", sans-serif;
+  --color-brand-950: #052e22;
+  --color-brand-900: #0d4f3c;
+  --color-brand-800: #166534;
+  --color-brand-700: #15803d;
+  --color-brand-600: #16a34a;
+  --color-accent-500: #14b8a6;
+  --color-accent-400: #2dd4bf;
+  --color-gold-500: #c4a962;
+  --color-surface: #ffffff;
+  --color-muted: #64748b;
+}
+
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --app-height: 100dvh;
+  --pad-x: clamp(1rem, 4.2vw, 1.35rem);
+  --tap: 48px;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+  height: -webkit-fill-available;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: #052e22;
+  color: #0f172a;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior: none;
+  user-select: none;
+  touch-action: manipulation;
+  margin: 0;
+  padding: 0;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+/* One phone-shaped shell: full bleed on iOS + Android, centered column on desktop */
+.app-shell {
+  width: 100%;
+  max-width: 100%;
+  margin: 0 auto;
+  height: var(--app-height, 100dvh);
+  max-height: var(--app-height, 100dvh);
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  padding-left: var(--sal);
+  padding-right: var(--sar);
+}
+
+.app-shell > * {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+}
+
+.app-frame {
+  width: 100%;
+  max-width: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+body.is-phone,
+body.is-standalone {
+  background: #f8fafc;
+}
+
+@media (hover: hover) and (pointer: fine) and (min-width: 768px) {
+  body:not(.is-phone):not(.is-standalone) {
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    background: #052e22;
+  }
+  body:not(.is-phone):not(.is-standalone) .app-shell {
+    max-width: 430px;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.35);
+  }
+}
+
+/* Compact Android / iPhone SE */
+@media (max-width: 360px) {
+  :root {
+    --pad-x: 0.85rem;
+  }
+  .font-display {
+    letter-spacing: -0.01em;
+  }
+}
+
+/* Large Android / Plus / Pro Max — still edge-to-edge, slightly roomier type */
+@media (min-width: 400px) and (max-width: 767px) {
+  :root {
+    --pad-x: 1.25rem;
+  }
+}
+
+.screen-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+.gradient-hero {
+  background: linear-gradient(180deg, rgba(5, 46, 34, 0.2) 0%, rgba(5, 46, 34, 0.85) 100%);
+}
+
+.btn-primary,
+.btn-secondary {
+  min-height: var(--tap);
+}
+
+.btn-primary {
+  @apply w-full rounded-xl bg-brand-900 px-6 py-3.5 text-sm font-semibold text-white shadow-lg shadow-brand-900/25 transition active:scale-[0.98] disabled:opacity-50;
+}
+
+.btn-secondary {
+  @apply w-full rounded-xl border border-slate-200 bg-white px-6 py-3.5 text-sm font-semibold text-brand-900 transition active:scale-[0.98];
+}
+
+.input-field {
+  @apply w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-base text-slate-900 outline-none transition focus:border-accent-500 focus:bg-white focus:ring-2 focus:ring-accent-500/20;
+  min-height: var(--tap);
+  font-size: 16px; /* iOS will zoom if inputs are < 16px */
+}
+
+.card {
+  @apply rounded-2xl border border-slate-100 bg-white p-5 shadow-sm;
+}
+
+.tab-active {
+  @apply text-brand-900;
+}
+
+/* Keyboard open on Android/iOS: keep focused field visible */
+body.keyboard-open .app-shell {
+  height: var(--app-height);
+  max-height: var(--app-height);
+}
+
+select,
+textarea,
+input {
+  font-size: 16px;
+}

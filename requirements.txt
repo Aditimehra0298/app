@@ -1,0 +1,7 @@
+Flask>=3.0.0,<4
+reportlab>=4.0.0,<5
+Pillow>=10.0.0,<12
+pypdf>=4.0.0,<6
+qrcode[pil]>=7.4.0,<9
+gunicorn>=22.0.0,<24
+pymysql>=1.1.0,<2
