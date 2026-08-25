@@ -1,0 +1,41 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "com.sft.training"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.sft.training"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            output.outputFileName = "SFT.apk"
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.core:core:1.13.1"
+}

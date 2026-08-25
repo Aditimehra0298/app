@@ -1,7 +1,17 @@
 const jsonHeaders = { 'Content-Type': 'application/json' }
 
+const API_BASE = String(import.meta.env.VITE_API_BASE || '').replace(/\/$/, '')
+
+function apiUrl(url: string) {
+  if (url.startsWith('http://') || url.startsWith('https://')) return url
+  return `${API_BASE}${url}`
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(url, { credentials: 'same-origin', ...options })
+  const res = await fetch(apiUrl(url), {
+    credentials: API_BASE ? 'omit' : 'same-origin',
+    ...options,
+  })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = data as { error?: string; message?: string }
@@ -52,6 +62,12 @@ export const api = {
       { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ answers }) },
     ),
 
+  uploadPractical: (formData: FormData) =>
+    request<{ success: boolean; passed: boolean; awaiting_trainer?: boolean; certificate_ready?: boolean }>(
+      '/api/assessment/video',
+      { method: 'POST', body: formData },
+    ),
+
   generateCertificate: () =>
     request<import('../types').CertificateResult>('/api/certificate/generate', { method: 'POST' }),
 
@@ -59,10 +75,12 @@ export const api = {
 
   reset: () => request<{ success: boolean }>('/api/reset', { method: 'POST' }),
 
+  logout: () => request<{ success: boolean }>('/api/logout', { method: 'POST' }),
+
   verify: (certId: string) =>
     request<import('../types').VerifyResult>(`/api/verify/${encodeURIComponent(certId)}`),
 
-  verifyCertificate: (email: string, number: string) =>
+  verifyCertificate: (uid: string, number: string) =>
     request<{
       ok: boolean
       verified?: boolean
@@ -79,19 +97,100 @@ export const api = {
       }
       student?: import('../types').Student
     }>(
-      `/api/certificates/verify?email=${encodeURIComponent(email)}&number=${encodeURIComponent(number)}&q=${encodeURIComponent(number)}`,
+      `/api/certificates/verify?uid=${encodeURIComponent(uid)}&number=${encodeURIComponent(number)}&q=${encodeURIComponent(number)}`,
     ),
 
-  adminStatus: () => request<{ authenticated: boolean }>('/api/admin/status'),
+  requestVerifyVideoAccess: (payload: {
+    uid: string
+    number: string
+    name: string
+    organisation: string
+    email: string
+    location: string
+  }) =>
+    request<{
+      ok: boolean
+      token?: string
+      videos?: import('../types').VerifyVideoProof[]
+      message?: string
+    }>('/api/certificates/verify/video-access', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify(payload),
+    }),
+
+  adminStatus: () => request<{ authenticated: boolean; institute?: { uid: string; name: string } | null }>('/api/admin/status'),
 
   adminLogin: (uid: string, email: string) =>
-    request<{ success: boolean }>('/api/admin/login', {
+    request<{ success: boolean; institute?: { uid: string; name: string } }>('/api/admin/login', {
       method: 'POST',
       headers: jsonHeaders,
       body: JSON.stringify({ uid, email }),
     }),
 
   adminLogout: () => request<{ success: boolean }>('/api/admin/logout', { method: 'POST' }),
+
+  adminListCourses: () =>
+    request<{ success: boolean; courses: import('../types').InstituteCourse[] }>('/api/admin/courses'),
+
+  adminAddCourse: (data: {
+    title: string
+    description: string
+    batch_start: string
+    batch_end: string
+    steps: { title: string; description: string }[]
+    image?: File | null
+  }) => {
+    const fd = new FormData()
+    fd.append('title', data.title)
+    fd.append('description', data.description)
+    fd.append('batch_start', data.batch_start)
+    fd.append('batch_end', data.batch_end)
+    fd.append('steps', JSON.stringify(data.steps))
+    if (data.image) fd.append('image', data.image)
+    return request<{ success: boolean; courses: import('../types').InstituteCourse[]; message: string }>(
+      '/api/admin/courses',
+      { method: 'POST', body: fd },
+    )
+  },
+
+  adminDeleteCourse: (courseId: string) =>
+    request<{ success: boolean; courses: import('../types').InstituteCourse[]; message: string }>(
+      `/api/admin/courses/${encodeURIComponent(courseId)}`,
+      { method: 'DELETE' },
+    ),
+
+  adminGetCourse: (courseId: string) =>
+    request<{
+      success: boolean
+      course: import('../types').InstituteCourse
+      steps: import('../types').TrainingStep[]
+      students: import('../types').Student[]
+    }>(`/api/admin/courses/${encodeURIComponent(courseId)}`),
+
+  adminAddCourseStudent: (courseId: string, formData: FormData) =>
+    request<{ success: boolean; message: string; student: import('../types').Student }>(
+      `/api/admin/courses/${encodeURIComponent(courseId)}/students`,
+      { method: 'POST', body: formData },
+    ),
+
+  adminDeleteStudent: (uid: string) =>
+    request<{ success: boolean; message: string }>(
+      `/api/admin/students/${encodeURIComponent(uid)}`,
+      { method: 'DELETE' },
+    ),
+
+  adminUploadStudentPhoto: (uid: string, formData: FormData) =>
+    request<{ success: boolean; message: string; student: import('../types').Student }>(
+      `/api/admin/students/${encodeURIComponent(uid)}/photo`,
+      { method: 'POST', body: formData },
+    ),
+
+  adminUploadStudentVideo: (uid: string, stepId: string | number, formData: FormData) =>
+    request<{ success: boolean; message: string; student: import('../types').Student }>(
+      `/api/admin/students/${encodeURIComponent(uid)}/videos/${encodeURIComponent(String(stepId))}/upload`,
+      { method: 'POST', body: formData },
+    ),
 
   adminListSteps: () =>
     request<{ success: boolean; steps: import('../types').TrainingStep[] }>('/api/admin/steps'),
@@ -116,6 +215,69 @@ export const api = {
 
   adminListStudents: () =>
     request<{ success: boolean; students: import('../types').Student[] }>('/api/admin/students'),
+
+  adminListVideoAccessRequests: () =>
+    request<{
+      success: boolean
+      count: number
+      requests: Array<{
+        id: number
+        uid: string
+        certificateNumber?: string
+        name: string
+        organisation: string
+        email: string
+        location: string
+        createdAt?: string
+        expiresAt?: string
+      }>
+    }>('/api/admin/video-access-requests'),
+
+  adminVerifyVideos: (uid: string) =>
+    request<{
+      success: boolean
+      message: string
+      student?: import('../types').Student
+      certificate?: import('../types').CertificateResult
+    }>(`/api/admin/students/${encodeURIComponent(uid)}/verify-videos`, { method: 'POST' }),
+
+  adminReviewVideo: (uid: string, stepId: string | number, status: 'approved' | 'reupload') =>
+    request<{
+      success: boolean
+      message: string
+      student?: import('../types').Student
+      certificate?: import('../types').CertificateResult | null
+    }>(`/api/admin/students/${encodeURIComponent(uid)}/videos/${encodeURIComponent(String(stepId))}/review`, {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ status }),
+    }),
+
+  adminSetScore: (uid: string, score: number, stepId?: string | number) =>
+    request<{
+      success: boolean
+      message: string
+      trainer_score: number | null
+      week_scores?: Record<string, number>
+      student?: import('../types').Student
+    }>(
+      `/api/admin/students/${encodeURIComponent(uid)}/score`,
+      {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ score, step_id: stepId == null ? undefined : String(stepId) }),
+      },
+    ),
+
+  adminSetGrade: (uid: string, grade: string) =>
+    request<{ success: boolean; message: string; trainer_grade: string; student?: import('../types').Student }>(
+      `/api/admin/students/${encodeURIComponent(uid)}/grade`,
+      {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ grade }),
+      },
+    ),
 
   adminGetTrainingSetup: () =>
     request<{ success: boolean; setup: import('../types').TrainingSetup }>('/api/admin/training-setup'),

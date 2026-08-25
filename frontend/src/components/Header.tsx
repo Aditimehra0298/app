@@ -1,6 +1,8 @@
 import { useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
+import { LogoutButton } from './LogoutButton'
+import { OrgLogo } from './OrgLogo'
 
 export function Header() {
   const { config, progress } = useApp()
@@ -18,7 +20,7 @@ export function Header() {
 
   let screenTitle = 'SFT'
   if (location.pathname === '/modules') screenTitle = `Module ${current}/${progress?.total_steps ?? 3}`
-  else if (location.pathname === '/assessment') screenTitle = 'Assessment'
+  else if (location.pathname === '/assessment') screenTitle = 'Practical'
   else if (location.pathname === '/certificate') screenTitle = 'Certificate'
 
   const onLogoTap = () => {
@@ -39,12 +41,15 @@ export function Header() {
           className="flex items-center gap-2"
           aria-label="SFT"
         >
-          <img src="/static/images/sft-logo.png?v=2" alt="" className="h-8 w-8 rounded-lg object-cover" />
+          <OrgLogo alt={config?.brand.short_name ?? 'SFT'} className="h-8 w-8 object-contain" />
           <span className="font-display text-sm font-bold tracking-wide">
             {config?.brand.short_name ?? 'SFT'}
           </span>
         </button>
-        <span className="text-xs font-semibold text-white/75">{screenTitle}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-white/75">{screenTitle}</span>
+          <LogoutButton />
+        </div>
       </div>
       {phase !== 'registration' && (
         <div className="h-0.5 bg-white/10">

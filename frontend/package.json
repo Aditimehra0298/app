@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:hostinger": "tsc -b && vite build --mode verify && bash ../deploy/hostinger/pack-static.sh",
     "lint": "oxlint",
     "preview": "vite preview"
   },

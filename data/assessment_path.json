@@ -35,6 +35,16 @@
       "max_seconds": 120,
       "icon": "04",
       "image": "/static/images/week4-final-testing.jpg"
+    },
+    {
+      "id": 5,
+      "title": "Final Assessment",
+      "description": "Record a 2-minute final practical assessment. Your trainer will watch this video with all pathway videos, then unlock your certificate download and QR.",
+      "min_seconds": 90,
+      "max_seconds": 150,
+      "icon": "05",
+      "image": "/static/images/assessment-desk.jpg",
+      "kind": "practical"
     }
   ]
 }

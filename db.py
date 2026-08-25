@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import uuid
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
@@ -14,7 +15,7 @@ BASE_DIR = Path(__file__).resolve().parent
 STUDENT_PHOTOS_DIR = BASE_DIR / "static" / "students"
 STUDENT_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_DATABASE_URL = "mysql://root@127.0.0.1:3306/sft"
+DEFAULT_DATABASE_URL = "mysql://root:MyNewPass123!@127.0.0.1:3306/sft_lms"
 LMS_PLUMBING_SLUG = "professional-plumbing-training-program"
 
 
@@ -126,6 +127,22 @@ SCHEMA_STATEMENTS = [
         KEY idx_students_cert (certificate_number)
     )     ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
+    """
+    CREATE TABLE IF NOT EXISTS video_access_requests (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        token VARCHAR(128) NOT NULL,
+        uid VARCHAR(32) NOT NULL,
+        certificate_number VARCHAR(64) NULL,
+        visitor_name VARCHAR(255) NOT NULL,
+        organisation VARCHAR(255) NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        location VARCHAR(255) NOT NULL,
+        expires_at DATETIME NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_video_access_token (token),
+        KEY idx_video_access_uid (uid)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
 ]
 
 SQLITE_SCHEMA = """
@@ -146,10 +163,27 @@ CREATE TABLE IF NOT EXISTS students (
     status TEXT NOT NULL DEFAULT 'admitted',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     videos_completed_at TEXT NULL,
-    assessment_completed_at TEXT NULL
+    assessment_completed_at TEXT NULL,
+    videos_verified_at TEXT NULL,
+    trainer_score INTEGER NULL,
+    trainer_grade TEXT NULL,
+    video_reviews TEXT NULL,
+    week_scores TEXT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_students_cert ON students(certificate_number);
 CREATE INDEX IF NOT EXISTS idx_students_email ON students(email);
+CREATE TABLE IF NOT EXISTS video_access_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT NOT NULL UNIQUE,
+    uid TEXT NOT NULL,
+    certificate_number TEXT NULL,
+    visitor_name TEXT NOT NULL,
+    organisation TEXT NOT NULL,
+    email TEXT NOT NULL,
+    location TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 SEED_STUDENTS = [
@@ -258,6 +292,10 @@ class _SqliteCursor:
     def fetchall(self):
         return [{key: row[key] for key in row.keys()} for row in self._cur.fetchall()]
 
+    @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
     def close(self):
         self._cur.close()
 
@@ -363,6 +401,16 @@ def init_db() -> None:
                 cur.execute("ALTER TABLE students ADD COLUMN videos_completed_at DATETIME NULL")
             if not _has_column(cur, "assessment_completed_at"):
                 cur.execute("ALTER TABLE students ADD COLUMN assessment_completed_at DATETIME NULL")
+            if not _has_column(cur, "videos_verified_at"):
+                cur.execute("ALTER TABLE students ADD COLUMN videos_verified_at DATETIME NULL")
+            if not _has_column(cur, "trainer_score"):
+                cur.execute("ALTER TABLE students ADD COLUMN trainer_score INT NULL")
+            if not _has_column(cur, "video_reviews"):
+                cur.execute("ALTER TABLE students ADD COLUMN video_reviews TEXT NULL")
+            if not _has_column(cur, "week_scores"):
+                cur.execute("ALTER TABLE students ADD COLUMN week_scores TEXT NULL")
+            if not _has_column(cur, "trainer_grade"):
+                cur.execute("ALTER TABLE students ADD COLUMN trainer_grade VARCHAR(64) NULL")
             _migrate_legacy_uids(cur)
             _migrate_certificate_numbers(cur)
     init_lms_bridge()
@@ -370,6 +418,70 @@ def init_db() -> None:
 
 def _lms_id() -> str:
     return "c" + uuid.uuid4().hex[:24]
+
+
+def _ensure_institute_organization(cur, *, name: str | None = None, email: str | None = None, uid: str | None = None) -> str:
+    """Ensure the training institute exists in lms_organization and return its id."""
+    org_name = (name or os.environ.get("INSTITUTE_NAME") or "Eurotech").strip() or "Eurotech"
+    work_email = (email or os.environ.get("ADMIN_EMAIL") or "eurotech@gmail.com").strip().lower()
+    institute_uid = (uid or os.environ.get("ADMIN_UID") or "21EUROTECH001").strip().upper()
+
+    cur.execute(
+        """
+        SELECT id FROM lms_organization
+        WHERE LOWER(workEmail) = LOWER(%s) OR companyName = %s
+        LIMIT 1
+        """,
+        (work_email, org_name),
+    )
+    row = cur.fetchone()
+    if row:
+        org_id = str(row["id"])
+        cur.execute(
+            """
+            UPDATE lms_organization
+            SET companyName = %s, workEmail = %s, industryType = COALESCE(industryType, %s), updatedAt = NOW(3)
+            WHERE id = %s
+            """,
+            (org_name, work_email, "training-institute", org_id),
+        )
+        return org_id
+
+    cur.execute("SELECT COALESCE(MAX(identificationNumber), 0) + 1 AS n FROM lms_organization")
+    ident = int((cur.fetchone() or {}).get("n") or 1)
+    org_id = _lms_id()
+    cur.execute(
+        """
+        INSERT INTO lms_organization (
+            id, identificationNumber, companyName, workEmail, industryType, companySize,
+            createdAt, updatedAt
+        ) VALUES (%s, %s, %s, %s, %s, %s, NOW(3), NOW(3))
+        """,
+        (org_id, ident, org_name, work_email, "training-institute", institute_uid),
+    )
+    return org_id
+
+
+def _ensure_learner_user(cur, *, email: str, name: str, phone: str = "") -> str | None:
+    email = str(email or "").strip().lower()
+    if not email or "@" not in email:
+        return None
+    cur.execute("SELECT id FROM lms_user WHERE LOWER(email) = LOWER(%s) LIMIT 1", (email,))
+    row = cur.fetchone()
+    if row:
+        return str(row["id"])
+    user_id = _lms_id()
+    cur.execute("SELECT COALESCE(MAX(identificationNumber), 0) + 1 AS n FROM lms_user")
+    ident = int((cur.fetchone() or {}).get("n") or 1)
+    cur.execute(
+        """
+        INSERT INTO lms_user (
+            id, email, name, role, accountType, phone, identificationNumber, createdAt, emailVerifiedAt
+        ) VALUES (%s, %s, %s, 'learner', 'individual', %s, %s, NOW(3), NOW(3))
+        """,
+        (user_id, email, name, phone or None, ident),
+    )
+    return user_id
 
 
 def _ensure_plumbing_course(cur) -> tuple[str, str]:
@@ -410,22 +522,14 @@ def init_lms_bridge() -> None:
     if not cfg:
         return
     try:
-        with get_lms_connection() as conn:
-            if conn is None:
-                return
-            with conn.cursor() as cur:
-                cur.execute("SHOW TABLES LIKE 'lms_certificate'")
-                if not cur.fetchone():
-                    raise RuntimeError("lms_certificate table not found")
-                _ensure_plumbing_course(cur)
-        synced = 0
-        for student in list_students():
-            if sync_certificate_to_lms(student):
-                synced += 1
+        result = sync_all_app_data_to_lms()
+        synced = int(result.get("synced") or 0)
         print(
             f"LMS MySQL connected: {cfg['user']}@{cfg['host']}:{cfg['port']}/{cfg['database']} ({synced} certificates synced)",
             flush=True,
         )
+        if not result.get("ok") and result.get("error"):
+            print(f"LMS sync note: {result['error']}", flush=True)
     except Exception as exc:
         print(f"LMS MySQL not connected ({cfg['host']}/{cfg['database']}): {exc}", flush=True)
 
@@ -440,6 +544,7 @@ def sync_certificate_to_lms(student: dict | None) -> bool:
         return False
     name = str(student.get("name") or "").strip()
     course_title = str(student.get("course_name") or "Professional Plumbing Training Program").strip()
+    phone = str(student.get("phone") or "").strip()
     issue = str(student.get("issue_date") or date.today().isoformat())[:10]
     issued_at = f"{issue} 00:00:00"
     base = os.environ.get("PUBLIC_BASE_URL", "http://127.0.0.1:5001").rstrip("/")
@@ -450,6 +555,8 @@ def sync_certificate_to_lms(student: dict | None) -> bool:
                 return False
             with conn.cursor() as cur:
                 course_id, course_name = _ensure_plumbing_course(cur)
+                org_id = _ensure_institute_organization(cur)
+                user_id = _ensure_learner_user(cur, email=email, name=name, phone=phone)
                 title = course_title or course_name
                 cur.execute(
                     """
@@ -472,8 +579,11 @@ def sync_certificate_to_lms(student: dict | None) -> bool:
                             certificateNumber = %s,
                             delegateNumber = %s,
                             pdfUrl = %s,
+                            organizationId = %s,
+                            userId = COALESCE(userId, %s),
                             status = 'issued',
                             visibleToLearner = 1,
+                            issuedVia = 'trade-app',
                             issuedAt = COALESCE(issuedAt, %s)
                         WHERE id = %s
                         """,
@@ -486,6 +596,8 @@ def sync_certificate_to_lms(student: dict | None) -> bool:
                             number,
                             uid,
                             pdf_url,
+                            org_id,
+                            user_id,
                             issued_at,
                             existing["id"],
                         ),
@@ -498,12 +610,12 @@ def sync_certificate_to_lms(student: dict | None) -> bool:
                 cur.execute(
                     """
                     INSERT INTO lms_certificate (
-                        id, holderType, learnerEmail, learnerName, courseSlug, courseId,
+                        id, userId, organizationId, holderType, learnerEmail, learnerName, courseSlug, courseId,
                         courseTitle, certificateNumber, identificationNumber, issuedAt,
                         scorePercent, status, visibleToLearner, pdfUrl, issuedVia,
                         delegateNumber, verifyNumber
                     ) VALUES (
-                        %s, 'individual', %s, %s, %s, %s,
+                        %s, %s, %s, 'individual', %s, %s, %s, %s,
                         %s, %s, %s, %s,
                         100, 'issued', 1, %s, 'trade-app',
                         %s, %s
@@ -511,6 +623,8 @@ def sync_certificate_to_lms(student: dict | None) -> bool:
                     """,
                     (
                         _lms_id(),
+                        user_id,
+                        org_id,
                         email,
                         name,
                         LMS_PLUMBING_SLUG,
@@ -529,6 +643,31 @@ def sync_certificate_to_lms(student: dict | None) -> bool:
         print(f"LMS certificate sync skipped ({uid}): {exc}", flush=True)
         return False
 
+
+def sync_all_app_data_to_lms() -> dict:
+    """Push all institute students/certificates into Admin LMS tables."""
+    if not _lms_connect_kwargs():
+        return {"ok": False, "synced": 0, "organizationId": None, "error": "LMS database not configured"}
+    org_id = None
+    synced = 0
+    errors: list[str] = []
+    try:
+        with get_lms_connection() as conn:
+            if conn is None:
+                return {"ok": False, "synced": 0, "organizationId": None, "error": "LMS connection failed"}
+            with conn.cursor() as cur:
+                org_id = _ensure_institute_organization(cur)
+                _ensure_plumbing_course(cur)
+        for student in list_students():
+            if sync_certificate_to_lms(student):
+                synced += 1
+            else:
+                uid = str(student.get("uid") or "")
+                if uid:
+                    errors.append(uid)
+        return {"ok": True, "synced": synced, "organizationId": org_id, "failed": errors}
+    except Exception as exc:
+        return {"ok": False, "synced": synced, "organizationId": org_id, "error": str(exc)}
 
 def _row_to_dict(row: dict | None) -> dict | None:
     if row is None:
@@ -551,12 +690,147 @@ def _row_to_dict(row: dict | None) -> dict | None:
     d.setdefault("email", "")
     d.setdefault("status", "admitted")
     d.setdefault("logo_path", None)
-    for key in ("videos_completed_at", "assessment_completed_at"):
+    for key in ("videos_completed_at", "assessment_completed_at", "videos_verified_at"):
         if d.get(key) is not None:
             d[key] = str(d[key])
         else:
             d.setdefault(key, None)
+    d["video_reviews"] = _parse_video_reviews(d.get("video_reviews"))
+    d["week_scores"] = _parse_week_scores(d.get("week_scores"))
+    score = d.get("trainer_score")
+    try:
+        d["trainer_score"] = int(score) if score is not None and str(score).strip() != "" else None
+    except (TypeError, ValueError):
+        d["trainer_score"] = None
+    d["trainer_grade"] = str(d.get("trainer_grade") or "").strip() or None
     return d
+
+
+def _parse_video_reviews(raw) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="ignore")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _parse_week_scores(raw) -> dict:
+    data = _parse_video_reviews(raw)
+    scores: dict[str, int] = {}
+    for key, value in data.items():
+        try:
+            score = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= score <= 100:
+            scores[str(key)] = score
+    return scores
+
+
+def public_student_view(student: dict | None) -> dict | None:
+    """Student-facing payload: never include trainer score or video review notes."""
+    if not student:
+        return None
+    d = dict(student)
+    d.pop("trainer_score", None)
+    d.pop("week_scores", None)
+    d.pop("trainer_grade", None)
+    d.pop("video_reviews", None)
+    return d
+
+
+def get_video_reviews(uid: str) -> dict:
+    student = get_student_by_uid(uid)
+    return dict((student or {}).get("video_reviews") or {})
+
+
+def set_video_review(uid: str, step_key: str, status: str) -> dict | None:
+    reviews = get_video_reviews(uid)
+    reviews[str(step_key)] = status
+    payload = json.dumps(reviews)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE students SET video_reviews = %s WHERE LOWER(uid) = LOWER(%s)",
+                (payload, uid.strip()),
+            )
+    return get_student_by_uid(uid)
+
+
+def set_all_video_reviews(uid: str, status: str, keys: list[str]) -> dict | None:
+    reviews = get_video_reviews(uid)
+    for key in keys:
+        reviews[str(key)] = status
+    payload = json.dumps(reviews)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE students SET video_reviews = %s WHERE LOWER(uid) = LOWER(%s)",
+                (payload, uid.strip()),
+            )
+    return get_student_by_uid(uid)
+
+
+def set_week_score(uid: str, step_key: str, score: int) -> dict | None:
+    uid = str(uid or "").strip()
+    key = str(step_key or "").strip()
+    if not uid or not key:
+        return None
+    student = get_student_by_uid(uid)
+    if not student:
+        return None
+    scores = dict(student.get("week_scores") or {})
+    scores[key] = int(score)
+    nums = [int(v) for v in scores.values() if isinstance(v, int) or str(v).isdigit()]
+    average = round(sum(nums) / len(nums)) if nums else None
+    payload = json.dumps(scores)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE students SET week_scores = %s, trainer_score = %s WHERE LOWER(uid) = LOWER(%s)",
+                (payload, average, uid),
+            )
+    return get_student_by_uid(uid)
+
+
+def set_trainer_score(uid: str, score: int | None) -> dict | None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE students SET trainer_score = %s WHERE LOWER(uid) = LOWER(%s)",
+                (score, uid.strip()),
+            )
+    return get_student_by_uid(uid)
+
+
+def set_trainer_grade(uid: str, grade: str) -> dict | None:
+    uid = str(uid or "").strip()
+    value = str(grade or "").strip()
+    if not uid or not value:
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE students SET trainer_grade = %s WHERE LOWER(uid) = LOWER(%s)",
+                (value, uid),
+            )
+    return get_student_by_uid(uid)
+
+
+def clear_videos_verified(uid: str) -> dict | None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE students SET videos_verified_at = NULL WHERE LOWER(uid) = LOWER(%s)",
+                (uid.strip(),),
+            )
+    return get_student_by_uid(uid)
 
 
 def _format_date(value: str | None) -> str:
@@ -768,6 +1042,25 @@ def get_student_by_certificate(certificate_number: str) -> dict | None:
     return _row_to_dict(row)
 
 
+def get_student_by_uid_and_certificate(uid: str, number: str) -> dict | None:
+    """Match verify form: student UID + certificate number must belong to the same record."""
+    uid_s = str(uid or "").strip()
+    number_s = str(number or "").strip()
+    if not uid_s or not number_s:
+        return None
+    student = get_student_by_uid(uid_s)
+    if not student:
+        return None
+    aliases = _certificate_aliases(str(student.get("certificate_number") or ""), str(student.get("uid") or ""))
+    aliases |= _certificate_aliases(number_s, str(student.get("uid") or ""))
+    wanted = number_s.upper()
+    if wanted in {item.upper() for item in aliases}:
+        return student
+    if _compact_uid(number_s) == _compact_uid(str(student.get("uid") or "")):
+        return student
+    return None
+
+
 def get_student_by_email_and_certificate(email: str, number: str) -> dict | None:
     """Match LMS verify: registered Gmail + certificate number (or UID)."""
     email_l = str(email or "").strip().lower()
@@ -821,6 +1114,47 @@ def save_student_certificate(uid: str, certificate_number: str, issue_date: str 
     return student
 
 
+def delete_student_certificate(uid: str) -> dict | None:
+    uid = str(uid or "").strip()
+    if not uid:
+        return None
+    student = get_student_by_uid(uid)
+    number = str((student or {}).get("certificate_number") or "").strip()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE students
+                SET certificate_number = NULL,
+                    status = CASE WHEN status = 'certified' THEN 'videos_verified' ELSE status END
+                WHERE LOWER(uid) = LOWER(%s)
+                """,
+                (uid,),
+            )
+    _delete_lms_certificate(uid, number)
+    return get_student_by_uid(uid)
+
+
+def _delete_lms_certificate(uid: str, number: str = "") -> None:
+    if not _lms_connect_kwargs():
+        return
+    try:
+        with get_lms_connection() as conn:
+            if conn is None:
+                return
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM lms_certificate
+                    WHERE LOWER(delegateNumber) = LOWER(%s)
+                       OR ( %s <> '' AND LOWER(certificateNumber) = LOWER(%s) )
+                    """,
+                    (uid, number, number),
+                )
+    except Exception as exc:
+        print(f"LMS certificate delete skipped ({uid}): {exc}", flush=True)
+
+
 def upsert_student(data: dict) -> dict:
     fields = (
         "name",
@@ -844,11 +1178,29 @@ def upsert_student(data: dict) -> dict:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id FROM students WHERE LOWER(uid) = LOWER(%s)",
+                "SELECT * FROM students WHERE LOWER(uid) = LOWER(%s)",
                 (values["uid"],),
             )
             existing = cur.fetchone()
             if existing:
+                keep_if_blank = (
+                    "father_name",
+                    "certificate_number",
+                    "issue_date",
+                    "image_path",
+                    "logo_path",
+                    "phone",
+                    "email",
+                    "batch_start",
+                    "batch_end",
+                    "status",
+                    "course_name",
+                )
+                for key in keep_if_blank:
+                    incoming = values.get(key)
+                    current = existing.get(key) if isinstance(existing, dict) else existing[key]
+                    if incoming in (None, "") and current not in (None, ""):
+                        values[key] = current
                 cur.execute(
                     """
                     UPDATE students SET
@@ -971,10 +1323,26 @@ def update_student_status(uid: str, status: str) -> dict | None:
     return get_student_by_uid(uid)
 
 
+def set_student_image_path(uid: str, image_path: str) -> dict | None:
+    uid = str(uid or "").strip()
+    path = str(image_path or "").strip()
+    if not uid or not path:
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE students SET image_path = %s WHERE LOWER(uid) = LOWER(%s)",
+                (path, uid),
+            )
+    return get_student_by_uid(uid)
+
+
 def mark_student_milestone(
     uid: str,
     videos_completed_at: str | None = None,
     assessment_completed_at: str | None = None,
+    videos_verified_at: str | None = None,
+    issue_date: str | None = None,
 ) -> dict | None:
     """Persist video/assessment completion timestamps without overwriting other fields."""
     uid = uid.strip()
@@ -988,6 +1356,14 @@ def mark_student_milestone(
     if assessment_completed_at:
         assignments.append("assessment_completed_at = COALESCE(assessment_completed_at, %s)")
         values.append(str(assessment_completed_at)[:19].replace("T", " "))
+    if videos_verified_at:
+        assignments.append("videos_verified_at = COALESCE(videos_verified_at, %s)")
+        values.append(str(videos_verified_at)[:19].replace("T", " "))
+        assignments.append("status = CASE WHEN COALESCE(status, '') = 'certified' THEN status ELSE %s END")
+        values.append("videos_verified")
+    if issue_date:
+        assignments.append("issue_date = %s")
+        values.append(str(issue_date)[:10])
     if not assignments:
         return get_student_by_uid(uid)
     values.append(uid)
@@ -998,6 +1374,128 @@ def mark_student_milestone(
                 values,
             )
     return get_student_by_uid(uid)
+
+
+def _row_to_video_access(row) -> dict:
+    data = dict(row) if row else {}
+    for key in ("expires_at", "created_at"):
+        value = data.get(key)
+        if hasattr(value, "isoformat"):
+            data[key] = value.isoformat(sep=" ", timespec="seconds")
+        elif value is not None:
+            data[key] = str(value)
+    return data
+
+
+def create_video_access_request(
+    *,
+    uid: str,
+    certificate_number: str,
+    visitor_name: str,
+    organisation: str,
+    email: str,
+    location: str,
+    token: str,
+    hours: int = 24,
+) -> dict:
+    uid = str(uid or "").strip()
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=max(1, int(hours)))
+    expires_sql = expires_at.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    payload = (
+        token,
+        uid,
+        str(certificate_number or "").strip(),
+        str(visitor_name or "").strip(),
+        str(organisation or "").strip(),
+        str(email or "").strip().lower(),
+        str(location or "").strip(),
+        expires_sql,
+    )
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO video_access_requests (
+                    token, uid, certificate_number, visitor_name, organisation, email, location, expires_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                payload,
+            )
+            row_id = cur.lastrowid
+            cur.execute(
+                """
+                SELECT id, token, uid, certificate_number, visitor_name, organisation, email, location,
+                       expires_at, created_at
+                FROM video_access_requests
+                WHERE id = %s
+                LIMIT 1
+                """,
+                (row_id,),
+            )
+            row = cur.fetchone()
+    if row:
+        return _row_to_video_access(row)
+    return {
+        "id": row_id,
+        "token": token,
+        "uid": uid,
+        "certificate_number": str(certificate_number or "").strip(),
+        "visitor_name": str(visitor_name or "").strip(),
+        "organisation": str(organisation or "").strip(),
+        "email": str(email or "").strip().lower(),
+        "location": str(location or "").strip(),
+        "expires_at": expires_sql,
+    }
+
+
+def get_valid_video_access(token: str, uid: str) -> dict | None:
+    token = str(token or "").strip()
+    uid = str(uid or "").strip()
+    if not token or not uid:
+        return None
+    now_sql = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, token, uid, certificate_number, visitor_name, organisation, email, location,
+                       expires_at, created_at
+                FROM video_access_requests
+                WHERE token = %s AND LOWER(uid) = LOWER(%s) AND expires_at > %s
+                LIMIT 1
+                """,
+                (token, uid, now_sql),
+            )
+            row = cur.fetchone()
+    return _row_to_video_access(row) if row else None
+
+
+def list_video_access_requests(limit: int = 200) -> list[dict]:
+    limit = max(1, min(int(limit or 200), 1000))
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, token, uid, certificate_number, visitor_name, organisation, email, location,
+                       expires_at, created_at
+                FROM video_access_requests
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall() or []
+    return [_row_to_video_access(row) for row in rows]
+
+
+def delete_student(uid: str) -> bool:
+    uid = str(uid or "").strip()
+    if not uid:
+        return False
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM students WHERE LOWER(uid) = LOWER(%s)", (uid,))
+            return cur.rowcount > 0
 
 
 def seed_students(force: bool = False) -> int:

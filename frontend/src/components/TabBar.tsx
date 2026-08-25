@@ -5,7 +5,7 @@ import { useApp } from '../context/AppContext'
 const tabs = [
   { to: '/home', icon: Home, label: 'Home', phase: 'home' as const },
   { to: '/modules', icon: Video, label: 'Modules', phase: 'training' as const },
-  { to: '/assessment', icon: CheckSquare, label: 'Assessment', phase: 'assessment' as const },
+  { to: '/assessment', icon: CheckSquare, label: 'Practical', phase: 'assessment' as const },
   { to: '/certificate', icon: Award, label: 'Certificate', phase: 'certificate' as const },
 ]
 

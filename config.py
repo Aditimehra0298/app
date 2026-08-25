@@ -1,10 +1,10 @@
 """Sustainable Futures Training — steps, trade assessment, and app branding."""
 
 APP_BRAND = {
-    "name": "SFT Global Skills & Trade Assessment Council",
+    "name": "SFT Global Skill Assessment Council",
     "short_name": "SFT",
     "tagline": "Assessing Skills. Validating Competence.",
-    "powered_by": "SFT Global Trade Assessment Authority",
+    "powered_by": "SFT Global Skill Assessment Council",
     "theme_color": "#0d4f3c",
     "accent_color": "#14b8a6",
 }
@@ -26,8 +26,9 @@ DEFAULT_COURSE = "Plumbing Foundational Course"
 VIDEO_MIN_SECONDS = 60
 VIDEO_MAX_SECONDS = 120
 VIDEO_MAX_UPLOAD_BYTES = 300 * 1024 * 1024
-# After all videos and assessment are done, wait 1 hour before certificate generation
-CERTIFICATE_WAIT_SECONDS = 60 * 60
+# Final practical assessment video (~2 minutes)
+PRACTICAL_MIN_SECONDS = 90
+PRACTICAL_MAX_SECONDS = 150
 
 TRAINING_STEPS = [
     {
@@ -66,11 +67,37 @@ TRAINING_STEPS = [
         "icon": "03",
         "image": "/static/images/week3-sanitary-drainage.jpg",
     },
+    {
+        "id": 4,
+        "title": "Week 4 - Final Practical and Testing",
+        "description": (
+            "Record a 1–2 minute video of complete water supply and drainage connection, "
+            "fixture alignment, pressure testing, and leak testing."
+        ),
+        "min_seconds": 60,
+        "max_seconds": 120,
+        "icon": "04",
+        "image": "/static/images/week4-final-testing.jpg",
+    },
+    {
+        "id": 5,
+        "title": "Final Assessment",
+        "description": (
+            "Record a 2-minute final practical assessment. Your trainer will watch this video "
+            "with the pathway videos, then unlock your certificate."
+        ),
+        "min_seconds": 90,
+        "max_seconds": 150,
+        "icon": "05",
+        "image": "/static/images/assessment-desk.jpg",
+        "kind": "practical",
+    },
 ]
 
-ASSESSMENT_TITLE = "Plumbing Foundational Assessment"
+ASSESSMENT_TITLE = "Final Practical Assessment"
 ASSESSMENT_SUBTITLE = (
-    "Demonstrate your understanding of plumbing safety, fittings, and job completion standards."
+    "Record a 2-minute practical video. Your trainer will watch every video, then you can "
+    "download your certificate with a verification QR."
 )
 
 ASSESSMENT_QUESTIONS = [

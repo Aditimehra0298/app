@@ -3,17 +3,18 @@ import type { Student } from '../types'
 const PLUMBING_COURSE_NAME = 'Professional Plumbing Training Program'
 const PLUMBING_TEMPLATE_FILE = 'Professional plumbing tarining program.pdf'
 
-export function localVerifyUrl(uid: string, extra?: { email?: string; number?: string }) {
+export function localVerifyUrl(uid: string, extra?: { number?: string }) {
   const params = new URLSearchParams()
-  const number = String(extra?.number || uid || '').trim()
-  const email = String(extra?.email || '').trim().toLowerCase()
+  const number = String(extra?.number || '').trim()
+  const roll = String(uid || '').trim()
+  if (roll) params.set('uid', roll)
   if (number) {
     params.set('number', number)
     params.set('q', number)
   }
-  if (email) params.set('email', email)
   const qs = params.toString()
-  return qs ? `https://sftlms.com/certificates/verify?${qs}` : 'https://sftlms.com/certificates/verify'
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  return qs ? `${origin}/verify?${qs}` : `${origin}/verify`
 }
 
 const DEFAULT_CERTIFICATE_WEBHOOK =
@@ -59,9 +60,22 @@ export function isPlumbingCourse(courseName: string): boolean {
   return /plumb/i.test(courseName || '')
 }
 
-export function buildCertificatePayload(student: Student, grade?: string) {
+export interface CertificateRequestOptions {
+  batch_start?: string
+  batch_end?: string
+  issue_date?: string
+}
+
+export function buildCertificatePayload(
+  student: Student,
+  grade?: string,
+  options?: CertificateRequestOptions,
+) {
   const uid = String(student.uid || '').trim()
   const courseFromDb = String(student.course_name || '').trim()
+  const batchStart = options?.batch_start || student.batch_start
+  const batchEnd = options?.batch_end || student.batch_end
+  const issueIso = options?.issue_date || student.issue_date
 
   const deriveCertificateNumber = (u: string, issueDate?: string | null): string => {
     const match = String(u || '').match(/(\d{3})$/)
@@ -71,7 +85,7 @@ export function buildCertificatePayload(student: Student, grade?: string) {
     return `ET/PPT/${last3}/${year}`
   }
 
-  const certificateNumber = deriveCertificateNumber(uid, student.issue_date || null)
+  const certificateNumber = deriveCertificateNumber(uid, issueIso || null)
   const payload: Record<string, string> = {
     certificateId: uid,
     candidateName: String(student.name || '').trim(),
@@ -82,19 +96,18 @@ export function buildCertificatePayload(student: Student, grade?: string) {
     delegateNumber: uid,
     uid,
     verifyUrl: localVerifyUrl(uid, {
-      email: String(student.email || ''),
       number: certificateNumber,
     }),
-    issueDate: toDdMmYyyy(student.issue_date) || toDdMmYyyy(new Date().toISOString().slice(0, 10)),
-    startDate: toDdMmYyyy(student.batch_start),
-    trainingDuration: trainingDurationMonths(student.batch_start, student.batch_end),
+    startDate: toDdMmYyyy(batchStart),
+    endDate: toDdMmYyyy(batchEnd),
+    issueDate: toDdMmYyyy(issueIso || batchEnd),
+    trainingDuration: trainingDurationMonths(batchStart, batchEnd) || (isPlumbingCourse(courseFromDb) ? '1' : ''),
   }
 
   const imagePath = String(student.image_path || '').trim()
   if (imagePath) {
     const normalized = imagePath.startsWith('/') ? imagePath : `/${imagePath}`
     const photoUrl = /^https?:\/\//i.test(imagePath) ? imagePath : `${window.location.origin}${normalized}`
-    // Different generators/workflows may read different keys.
     payload.photoUrl = photoUrl
     payload.candidatePhotoUrl = photoUrl
     payload.imageUrl = photoUrl
@@ -118,12 +131,27 @@ export interface RemoteCertificateResult {
   error?: string
 }
 
-export async function generateCertificatePdf(student: Student, grade?: string): Promise<RemoteCertificateResult> {
+export async function generateCertificatePdf(
+  student: Student,
+  grade?: string,
+  options?: CertificateRequestOptions,
+): Promise<RemoteCertificateResult> {
+  const payload = buildCertificatePayload(student, grade, options)
   const fallback = await fetch('/api/certificate/generate', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ uid: student.uid, grade: grade || 'Excellent' }),
+    body: JSON.stringify({
+      uid: student.uid,
+      grade: grade || 'Excellent',
+      batch_start: options?.batch_start || student.batch_start,
+      batch_end: options?.batch_end || student.batch_end,
+      issue_date: options?.issue_date || student.issue_date,
+      startDate: payload.startDate,
+      issueDate: payload.issueDate,
+      trainingDuration: payload.trainingDuration,
+      certificateNumber: payload.certificateNumber,
+    }),
   })
   const data = (await fallback.json().catch(() => ({}))) as RemoteCertificateResult
   if (!fallback.ok || !data.success || !data.pdfUrl) {

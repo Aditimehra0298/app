@@ -1,0 +1,29 @@
+name: Build SFT Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "android-app/**"
+      - ".github/workflows/build-apk.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Build debug APK
+        working-directory: android-app
+        run: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SFT-app
+          path: android-app/app/build/outputs/apk/debug/SFT.apk

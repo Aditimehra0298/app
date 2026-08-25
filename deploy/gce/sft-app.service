@@ -1,0 +1,16 @@
+[Unit]
+Description=SFT institute app + certificate verify
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/sft-app
+EnvironmentFile=/opt/sft-app/.env
+Environment=PATH=/opt/sft-app/.venv/bin
+ExecStart=/opt/sft-app/.venv/bin/gunicorn --bind 127.0.0.1:5001 --workers 2 --threads 4 --timeout 120 app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

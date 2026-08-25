@@ -1,0 +1,994 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import {
+  Award,
+  CalendarDays,
+  Camera,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  FileText,
+  Plus,
+  Trash2,
+  Upload,
+  UserPlus,
+  Users,
+  Video,
+} from 'lucide-react'
+import { api } from '../api/client'
+import { generateCertificatePdf, localVerifyUrl, toDdMmYyyy, trainingDurationMonths } from '../api/certificate'
+import { InstituteTabBar } from '../components/InstituteTabBar'
+import { LogoutButton } from '../components/LogoutButton'
+import { OrgLogo } from '../components/OrgLogo'
+import { StudentPhoto } from '../components/StudentPhoto'
+import type { InstituteCourse, Student, TrainingStep } from '../types'
+
+function deriveCertNumber(uid: string, issueDate?: string | null) {
+  const last3 = uid.match(/(\d{3})$/)?.[1] || '001'
+  const year = (issueDate || '').slice(0, 4) || String(new Date().getFullYear())
+  return `ET/PPT/${last3}/${year}`
+}
+
+function formatBatchDate(iso: string) {
+  if (!iso) return ''
+  const [y, m, d] = iso.slice(0, 10).split('-')
+  if (!y || !m || !d) return iso
+  return `${d}-${m}-${y}`
+}
+
+const CERTIFICATE_GRADES = ['Outstanding', 'Excellent', 'Good'] as const
+
+function weekIdsForStudent(student: Student, fallbackIds: Array<string | number>) {
+  const fromVideos = (student.videos || []).map((video) => String(video.id))
+  return fromVideos.length ? fromVideos : fallbackIds.map(String)
+}
+
+function privateMarkFor(student: Student, id: string | number) {
+  const key = String(id)
+  const scores = student.week_scores || {}
+  const value = scores[key] ?? scores[Number(key) as unknown as string]
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function allPrivateMarksSaved(student: Student, fallbackIds: Array<string | number>) {
+  const ids = weekIdsForStudent(student, fallbackIds)
+  if (!ids.length) return false
+  return ids.every((id) => privateMarkFor(student, id) != null)
+}
+
+export function TrainingDetailPage() {
+  const { courseId = '' } = useParams()
+  const navigate = useNavigate()
+  const [checking, setChecking] = useState(true)
+  const [course, setCourse] = useState<InstituteCourse | null>(null)
+  const [steps, setSteps] = useState<TrainingStep[]>([])
+  const [students, setStudents] = useState<Student[]>([])
+  const [openUid, setOpenUid] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+  const [uploadingKey, setUploadingKey] = useState<string | null>(null)
+  const [generatingUid, setGeneratingUid] = useState<string | null>(null)
+  const [scoreDrafts, setScoreDrafts] = useState<Record<string, string>>({})
+  const [gradeDrafts, setGradeDrafts] = useState<Record<string, string>>({})
+
+  const [name, setName] = useState('')
+  const [fatherName, setFatherName] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
+  const [batchStart, setBatchStart] = useState('')
+  const [batchEnd, setBatchEnd] = useState('')
+  const [photo, setPhoto] = useState<File | null>(null)
+  const photoRef = useRef<HTMLInputElement>(null)
+  const replacePhotoRef = useRef<HTMLInputElement>(null)
+  const replacePhotoUidRef = useRef<string | null>(null)
+
+  const loadCourse = useCallback(async () => {
+    const res = await api.adminGetCourse(courseId)
+    setCourse(res.course)
+    setSteps(res.steps)
+    setStudents(res.students)
+    setScoreDrafts(
+      Object.fromEntries(
+        (res.students || []).flatMap((student) => {
+          const videos = student.videos || []
+          const fromVideos = videos.map((video) => [
+            `${student.uid}:${video.id}`,
+            video.privateScore == null ? '' : String(video.privateScore),
+          ])
+          const fromMap = Object.entries(student.week_scores || {}).map(([key, value]) => [
+            `${student.uid}:${key}`,
+            String(value),
+          ])
+          return [...fromVideos, ...fromMap]
+        }),
+      ),
+    )
+    setGradeDrafts(
+      Object.fromEntries((res.students || []).map((student) => [student.uid, student.trainer_grade || ''])),
+    )
+  }, [courseId])
+
+  useEffect(() => {
+    api
+      .adminStatus()
+      .then(async (s) => {
+        if (!s.authenticated) {
+          navigate('/', { replace: true })
+          return
+        }
+        await loadCourse()
+      })
+      .catch(() => navigate('/', { replace: true }))
+      .finally(() => setChecking(false))
+  }, [loadCourse, navigate])
+
+  const resetAddForm = () => {
+    setName('')
+    setFatherName('')
+    setEmail('')
+    setPhone('')
+    setBatchStart('')
+    setBatchEnd('')
+    setPhoto(null)
+    setAdding(false)
+    setError('')
+  }
+
+  const addMonths = (iso: string, months: number) => {
+    const [y, m, d] = iso.split('-').map(Number)
+    if (!y || !m || !d) return iso
+    const dt = new Date(y, m - 1 + months, d)
+    const mm = String(dt.getMonth() + 1).padStart(2, '0')
+    const dd = String(dt.getDate()).padStart(2, '0')
+    return `${dt.getFullYear()}-${mm}-${dd}`
+  }
+
+  const onBatchStartChange = (value: string) => {
+    setBatchStart(value)
+    const months = Number(course?.duration_months || 0)
+    if (value && months > 0) setBatchEnd(addMonths(value, months))
+  }
+
+  const addStudentDuration =
+    trainingDurationMonths(batchStart, batchEnd) || (batchStart && batchEnd ? '1' : '')
+
+  const addStudent = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!name.trim()) {
+      setError('Enter student name')
+      return
+    }
+    if (!batchStart || !batchEnd) {
+      setError('Enter this student\'s batch start and end dates.')
+      return
+    }
+    if (batchEnd < batchStart) {
+      setError('Batch end date must be on or after start date.')
+      return
+    }
+    if (!photo) {
+      setError('Upload the student photo.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      const fd = new FormData()
+      fd.append('name', name.trim())
+      fd.append('father_name', fatherName.trim())
+      fd.append('email', email.trim())
+      fd.append('phone', phone.trim())
+      fd.append('batch_start', batchStart)
+      fd.append('batch_end', batchEnd)
+      if (photo) fd.append('image', photo)
+      const res = await api.adminAddCourseStudent(courseId, fd)
+      setStudents((prev) => [...prev, res.student])
+      setMessage(res.message)
+      resetAddForm()
+      setOpenUid(res.student.uid)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not add student')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const replaceStudentPhoto = async (uid: string, file: File) => {
+    setBusy(true)
+    setError('')
+    try {
+      const fd = new FormData()
+      fd.append('image', file)
+      const res = await api.adminUploadStudentPhoto(uid, fd)
+      setStudents((prev) => prev.map((s) => (s.uid === uid ? { ...s, ...res.student } : s)))
+      setMessage('Photo saved')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save photo')
+    } finally {
+      setBusy(false)
+      replacePhotoUidRef.current = null
+    }
+  }
+
+  const removeStudent = async (student: Student) => {
+    if (!confirm(`Remove ${student.name}?`)) return
+    setBusy(true)
+    setError('')
+    try {
+      await api.adminDeleteStudent(student.uid)
+      setStudents((prev) => prev.filter((s) => s.uid !== student.uid))
+      if (openUid === student.uid) setOpenUid(null)
+      setMessage(`${student.name} removed`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not remove student')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const uploadVideo = async (uid: string, stepId: string | number, file: File) => {
+    const key = `${uid}:${stepId}`
+    setUploadingKey(key)
+    setError('')
+    try {
+      const fd = new FormData()
+      fd.append('video', file)
+      fd.append('durationUnknown', '1')
+      const res = await api.adminUploadStudentVideo(uid, stepId, fd)
+      setStudents((prev) =>
+        prev.map((s) =>
+          s.uid === uid
+            ? {
+                ...s,
+                ...res.student,
+                week_scores: res.student.week_scores || s.week_scores,
+              }
+            : s,
+        ),
+      )
+      setMessage('Video uploaded')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Upload failed')
+    } finally {
+      setUploadingKey(null)
+    }
+  }
+
+  const issueCertificate = async (student: Student) => {
+    setGeneratingUid(student.uid)
+    setError('')
+    setMessage('')
+    try {
+      const grade = (gradeDrafts[student.uid] || student.trainer_grade || '').trim()
+      if (!CERTIFICATE_GRADES.includes(grade as (typeof CERTIFICATE_GRADES)[number])) {
+        setError('Select Outstanding, Excellent, or Good first, then generate the certificate.')
+        return
+      }
+      const result = await generateCertificatePdf(student, grade, {
+        batch_start: student.batch_start,
+        batch_end: student.batch_end,
+        issue_date: student.issue_date || student.batch_end || undefined,
+      })
+      setStudents((prev) =>
+        prev.map((s) =>
+          s.uid === student.uid
+            ? {
+                ...s,
+                certificate: result as Student['certificate'],
+                certificate_recorded: true,
+                trainer_grade: grade,
+              }
+            : s,
+        ),
+      )
+      setMessage(`Certificate generated for ${student.name}`)
+      window.open(result.pdfUrl, '_blank', 'noopener,noreferrer')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Certificate generation failed')
+    } finally {
+      setGeneratingUid(null)
+      await loadCourse()
+    }
+  }
+
+  const savePrivateScore = async (student: Student, stepId: string | number) => {
+    const key = `${student.uid}:${stepId}`
+    const raw = scoreDrafts[key] ?? ''
+    const score = Number(raw)
+    if (!Number.isFinite(score) || score < 0 || score > 100) {
+      setError('Enter a private score between 0 and 100.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      const res = await api.adminSetScore(student.uid, score, stepId)
+      setStudents((prev) =>
+        prev.map((s) =>
+          s.uid === student.uid
+            ? {
+                ...s,
+                trainer_score: res.trainer_score,
+                week_scores: res.week_scores || { ...(s.week_scores || {}), [String(stepId)]: score },
+                videos: (s.videos || []).map((video) =>
+                  String(video.id) === String(stepId) ? { ...video, privateScore: score } : video,
+                ),
+              }
+            : s,
+        ),
+      )
+      setMessage(`Private marks saved for ${student.name}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save marks')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const saveGrade = async (student: Student, grade: string) => {
+    setGradeDrafts((prev) => ({ ...prev, [student.uid]: grade }))
+    if (!CERTIFICATE_GRADES.includes(grade as (typeof CERTIFICATE_GRADES)[number])) return
+    setBusy(true)
+    setError('')
+    try {
+      const res = await api.adminSetGrade(student.uid, grade)
+      setStudents((prev) =>
+        prev.map((s) => (s.uid === student.uid ? { ...s, trainer_grade: res.trainer_grade } : s)),
+      )
+      setMessage(`Grade saved for ${student.name}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save grade')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (checking) {
+    return (
+      <div className="app-frame flex items-center justify-center bg-slate-50 text-sm text-slate-400">
+        Loading…
+      </div>
+    )
+  }
+
+  if (!course) {
+    return (
+      <div className="app-frame flex flex-col items-center justify-center gap-3 bg-slate-50 p-6 text-center">
+        <p className="text-sm text-slate-500">Training not found</p>
+        <Link to="/home" className="text-sm font-semibold text-brand-900">
+          Back to home
+        </Link>
+      </div>
+    )
+  }
+
+  const pathwaySteps = steps.filter((s) => s.kind !== 'practical')
+  const practicalStep = steps.find((s) => s.kind === 'practical')
+
+  const isPlumbing = course.id === 'plumbing' || /plumb/i.test(course.title)
+  const heroImage = course.image || '/static/images/hero-plumbing.jpg'
+  const batchLabel =
+    course.batch_start || course.batch_end
+      ? `${formatBatchDate(course.batch_start || '')} – ${formatBatchDate(course.batch_end || '')}`
+      : ''
+  const heroKicker = isPlumbing ? 'Trade skills pathway' : 'Official training'
+  const heroSubtitle = isPlumbing
+    ? 'Hands-on foundation in tools, pipework, sanitary fittings, and site testing — with weekly video proofs and a certified finish.'
+    : course.description || 'Manage students, weekly videos, practical assessment, and certificates.'
+
+  return (
+    <div className="app-frame bg-slate-50">
+      <section className="relative shrink-0 overflow-hidden text-white">
+        <img src={heroImage} alt="" className="absolute inset-0 h-full w-full object-cover object-center" />
+        <div className="absolute inset-0 bg-linear-to-b from-black/55 via-brand-950/72 to-brand-950" />
+        <div className="relative z-10 flex min-h-[clamp(16.5rem,44vh,22rem)] flex-col px-4 pb-4 pt-[max(env(safe-area-inset-top),0.7rem)]">
+          <div className="flex items-center gap-2">
+            <OrgLogo alt="" className="h-10 w-10 shrink-0 rounded-full object-cover ring-2 ring-white/30" />
+            <p className="min-w-0 flex-1 truncate text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-white/70">
+              {heroKicker}
+            </p>
+            <LogoutButton />
+          </div>
+
+          <div className="mt-auto">
+            <p className="text-[0.65rem] font-bold uppercase tracking-[0.18em] text-accent-300">
+              {isPlumbing ? 'Professional Plumbing Foundation' : 'Training programme'}
+            </p>
+            <h1 className="mt-1.5 font-display text-[clamp(1.2rem,5.4vw,1.7rem)] font-bold leading-tight tracking-tight">
+              {course.title}
+            </h1>
+            <p className="mt-2 max-w-[22rem] text-[0.78rem] leading-relaxed text-white/80">
+              {heroSubtitle}
+            </p>
+            <div className="mt-3.5 grid grid-cols-2 gap-2">
+              <div className="rounded-2xl bg-black/35 px-2.5 py-2.5 ring-1 ring-white/15 backdrop-blur-md">
+                <Video size={13} className="text-accent-300" />
+                <p className="mt-1.5 text-[0.58rem] font-semibold uppercase tracking-wide text-white/50">Pathway</p>
+                <p className="mt-0.5 text-[0.72rem] font-bold leading-snug">{pathwaySteps.length} week videos</p>
+              </div>
+              <div className="rounded-2xl bg-black/35 px-2.5 py-2.5 ring-1 ring-white/15 backdrop-blur-md">
+                <Users size={13} className="text-accent-300" />
+                <p className="mt-1.5 text-[0.58rem] font-semibold uppercase tracking-wide text-white/50">Learners</p>
+                <p className="mt-0.5 text-[0.72rem] font-bold leading-snug">
+                  {students.length} student{students.length === 1 ? '' : 's'}
+                </p>
+              </div>
+            </div>
+            {batchLabel && (
+              <p className="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[0.68rem] font-semibold text-white/85 ring-1 ring-white/15">
+                <CalendarDays size={12} className="text-accent-300" />
+                Batch {batchLabel}
+              </p>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <main className="screen-scroll flex min-h-0 flex-1 flex-col p-4 pb-[max(env(safe-area-inset-bottom),5.5rem)]">
+        {/* Add student */}
+        <section>
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="flex items-center gap-2 font-display text-sm font-bold text-brand-950">
+              <UserPlus size={16} />
+              Students ({students.length})
+            </h2>
+            {!adding && (
+              <button
+                type="button"
+                onClick={() => { setAdding(true); setError(''); setMessage('') }}
+                className="inline-flex items-center gap-1 rounded-xl bg-brand-950 px-3 py-2 text-[0.72rem] font-semibold text-white active:scale-[0.97]"
+              >
+                <Plus size={14} /> Add student
+              </button>
+            )}
+          </div>
+
+          {adding && (
+            <form onSubmit={addStudent} className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-100">
+              <p className="mb-3 text-[0.72rem] text-slate-500">
+                Add a student and set their own batch start and end dates. These dates will print on their certificate.
+              </p>
+              <input ref={photoRef} type="file" accept="image/*" className="hidden" onChange={(e) => setPhoto(e.target.files?.[0] || null)} />
+              <button
+                type="button"
+                onClick={() => photoRef.current?.click()}
+                className="mb-1 flex h-20 w-20 items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50"
+              >
+                {photo ? (
+                  <img src={URL.createObjectURL(photo)} alt="" className="h-full w-full object-cover" />
+                ) : (
+                  <Camera size={22} className="text-slate-400" />
+                )}
+              </button>
+              <p className="mb-3 text-[0.62rem] font-semibold text-slate-500">Student photo *</p>
+              <div className="space-y-2.5">
+                <input className="input-field !py-2.5" placeholder="Student name *" value={name} onChange={(e) => setName(e.target.value)} required />
+                <input className="input-field !py-2.5" placeholder="Father's name" value={fatherName} onChange={(e) => setFatherName(e.target.value)} />
+                <input className="input-field !py-2.5" type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+                <input className="input-field !py-2.5" type="tel" placeholder="Phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block">
+                    <span className="mb-1 block text-[0.62rem] font-bold uppercase tracking-wide text-slate-500">
+                      Batch start *
+                    </span>
+                    <input
+                      className="input-field !py-2.5"
+                      type="date"
+                      value={batchStart}
+                      onChange={(e) => onBatchStartChange(e.target.value)}
+                      required
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[0.62rem] font-bold uppercase tracking-wide text-slate-500">
+                      Batch end *
+                    </span>
+                    <input
+                      className="input-field !py-2.5"
+                      type="date"
+                      min={batchStart || undefined}
+                      value={batchEnd}
+                      onChange={(e) => setBatchEnd(e.target.value)}
+                      required
+                    />
+                  </label>
+                </div>
+                <label className="block">
+                  <span className="mb-1 block text-[0.62rem] font-bold uppercase tracking-wide text-slate-500">
+                    Duration
+                  </span>
+                  <input
+                    className="input-field !py-2.5 bg-slate-50 text-slate-600"
+                    value={addStudentDuration ? `${addStudentDuration} month${addStudentDuration === '1' ? '' : 's'}` : ''}
+                    placeholder="Auto from batch dates"
+                    readOnly
+                  />
+                </label>
+                <p className="text-[0.65rem] leading-relaxed text-slate-400">
+                  Trainer sets each student&apos;s training period. The certificate will use these dates.
+                </p>
+              </div>
+              {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button type="button" onClick={resetAddForm} className="rounded-xl border border-slate-200 py-2.5 text-sm font-semibold text-slate-600">
+                  Cancel
+                </button>
+                <button type="submit" disabled={busy} className="rounded-xl bg-brand-950 py-2.5 text-sm font-semibold text-white disabled:opacity-50">
+                  {busy ? 'Adding…' : 'Add student'}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {message && !adding && <p className="mb-2 text-xs text-emerald-700">{message}</p>}
+          {error && !adding && <p className="mb-2 text-xs text-red-600">{error}</p>}
+
+          <input
+            ref={replacePhotoRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              e.target.value = ''
+              if (file && replacePhotoUidRef.current) void replaceStudentPhoto(replacePhotoUidRef.current, file)
+            }}
+          />
+
+          {students.length === 0 && !adding && (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-6 text-center">
+              <p className="text-sm font-semibold text-brand-950">No students yet</p>
+              <p className="mt-1 text-[0.72rem] text-slate-500">Add students, then upload their week videos here.</p>
+            </div>
+          )}
+
+          <ul className="space-y-3">
+            {students.map((student) => {
+              const expanded = openUid === student.uid
+              const videos = student.videos || []
+              const studentDuration =
+                trainingDurationMonths(student.batch_start, student.batch_end) ||
+                (course.duration_months ? String(course.duration_months) : '')
+              return (
+                <li key={student.uid} className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
+                  <div className="flex gap-3 p-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        replacePhotoUidRef.current = student.uid
+                        replacePhotoRef.current?.click()
+                      }}
+                      className="h-14 w-14 shrink-0 overflow-hidden rounded-full ring-2 ring-white"
+                      aria-label={`Change photo for ${student.name}`}
+                    >
+                      <StudentPhoto
+                        src={student.image_path}
+                        alt={student.name}
+                        className="h-14 w-14 rounded-full object-cover"
+                      />
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-slate-800">{student.name}</p>
+                      {student.father_name && <p className="text-[0.68rem] text-slate-500">S/O {student.father_name}</p>}
+                      <p className="mt-0.5 text-[0.65rem] font-semibold text-brand-800">UID: {student.uid}</p>
+                      {(student.batch_start || student.batch_end) && (
+                        <p className="text-[0.62rem] text-slate-500">
+                          Batch {formatBatchDate(student.batch_start || '')} – {formatBatchDate(student.batch_end || '')}
+                        </p>
+                      )}
+                      {studentDuration && (
+                        <p className="text-[0.62rem] text-slate-500">
+                          Duration: {studentDuration} month{studentDuration === '1' ? '' : 's'}
+                        </p>
+                      )}
+                      <p className="text-[0.62rem] text-slate-400">
+                        Videos: {student.video_proof || `${student.uploaded_steps ?? 0}/${student.expected_steps ?? pathwaySteps.length}`}
+                        {student.practical_uploaded || student.assessment_recorded ? ' · Practical ✓' : ''}
+                        {student.certificate_recorded ? ' · Certificate ✓' : ''}
+                      </p>
+                      {student.trainer_score != null && (
+                        <p className="text-[0.62rem] font-medium text-brand-800">
+                          Private avg: {student.trainer_score}/100
+                        </p>
+                      )}
+                      {(student.videos || []).length > 0 && (
+                        <p className="mt-0.5 text-[0.58rem] leading-relaxed text-slate-500">
+                          {(student.videos || [])
+                            .map((video) => {
+                              const mark = privateMarkFor(student, video.id)
+                              const label = video.kind === 'practical' ? 'Practical' : `W${video.id}`
+                              return `${label} ${mark == null ? '—' : mark}`
+                            })
+                            .join(' · ')}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setOpenUid(expanded ? null : student.uid)}
+                        className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-brand-900"
+                        aria-label={expanded ? 'Collapse' : 'Expand'}
+                      >
+                        {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void removeStudent(student)}
+                        disabled={busy}
+                        className="flex h-8 w-8 items-center justify-center rounded-lg bg-red-50 text-red-500 disabled:opacity-50"
+                        aria-label={`Remove ${student.name}`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {expanded && (
+                    <div className="space-y-3 border-t border-slate-100 bg-slate-50 p-3">
+                      <CertificatePanel
+                        student={student}
+                        course={course}
+                        busy={generatingUid === student.uid}
+                        grade={gradeDrafts[student.uid] ?? student.trainer_grade ?? ''}
+                        marksReady={allPrivateMarksSaved(student, [...pathwaySteps.map((s) => s.id), 'practical'])}
+                        onGradeChange={(value) => void saveGrade(student, value)}
+                        onGenerate={() => void issueCertificate(student)}
+                      />
+
+                      <p className="text-[0.68rem] font-bold uppercase tracking-wide text-slate-500">
+                        Upload videos for {student.name}
+                      </p>
+                      {videos.map((video) => {
+                        const uploadKey = `${student.uid}:${video.id}`
+                        const isUploading = uploadingKey === uploadKey
+                        return (
+                          <div key={String(video.id)} className="rounded-xl bg-white p-3 ring-1 ring-slate-100">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="text-[0.75rem] font-semibold text-brand-950">{video.title}</p>
+                                <p className="mt-0.5 line-clamp-2 text-[0.65rem] text-slate-500">{video.description}</p>
+                              </div>
+                              <div className="flex shrink-0 flex-col items-end gap-1">
+                                <span
+                                  className={`rounded-full px-2 py-0.5 text-[0.58rem] font-bold uppercase ${
+                                    video.uploaded ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'
+                                  }`}
+                                >
+                                  {video.uploaded ? 'Uploaded' : 'Pending'}
+                                </span>
+                                <span className="rounded-full bg-brand-950/8 px-2 py-0.5 text-[0.58rem] font-bold text-brand-900">
+                                  {privateMarkFor(student, video.id) == null
+                                    ? 'No marks'
+                                    : `${privateMarkFor(student, video.id)}/100`}
+                                </span>
+                              </div>
+                            </div>
+                            {video.uploaded && video.videoUrl && (
+                              <video src={video.videoUrl} controls playsInline className="mt-2 max-h-40 w-full rounded-lg bg-black" />
+                            )}
+                            <label className="mt-2 flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-brand-900/20 bg-brand-950/5 py-2.5 text-[0.72rem] font-semibold text-brand-900 active:scale-[0.98]">
+                              <Upload size={14} />
+                              {isUploading ? 'Uploading…' : video.uploaded ? 'Replace video' : 'Upload video'}
+                              <input
+                                type="file"
+                                accept="video/*"
+                                className="hidden"
+                                disabled={isUploading}
+                                onChange={(e) => {
+                                  const f = e.target.files?.[0]
+                                  if (f) void uploadVideo(student.uid, video.id, f)
+                                  e.target.value = ''
+                                }}
+                              />
+                            </label>
+                            <PrivateMarksField
+                              label={`Private marks · ${video.title}`}
+                              value={scoreDrafts[`${student.uid}:${video.id}`] ?? String(privateMarkFor(student, video.id) ?? '')}
+                              saved={privateMarkFor(student, video.id)}
+                              busy={busy}
+                              onChange={(value) =>
+                                setScoreDrafts((prev) => ({ ...prev, [`${student.uid}:${video.id}`]: value }))
+                              }
+                              onSave={() => void savePrivateScore(student, video.id)}
+                            />
+                          </div>
+                        )
+                      })}
+                      {!videos.length && pathwaySteps.map((step) => (
+                        <VideoUploadRow
+                          key={step.id}
+                          student={student}
+                          step={step}
+                          uploadingKey={uploadingKey}
+                          scoreValue={scoreDrafts[`${student.uid}:${step.id}`] ?? ''}
+                          onScoreChange={(value) =>
+                            setScoreDrafts((prev) => ({ ...prev, [`${student.uid}:${step.id}`]: value }))
+                          }
+                          onSaveMarks={() => void savePrivateScore(student, step.id)}
+                          busy={busy}
+                          onUpload={uploadVideo}
+                        />
+                      ))}
+                      {!videos.length && practicalStep && (
+                        <VideoUploadRow
+                          student={student}
+                          step={{ ...practicalStep, id: 'practical' }}
+                          uploadingKey={uploadingKey}
+                          scoreValue={scoreDrafts[`${student.uid}:practical`] ?? ''}
+                          onScoreChange={(value) =>
+                            setScoreDrafts((prev) => ({ ...prev, [`${student.uid}:practical`]: value }))
+                          }
+                          onSaveMarks={() => void savePrivateScore(student, 'practical')}
+                          busy={busy}
+                          onUpload={uploadVideo}
+                        />
+                      )}
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      </main>
+
+      <InstituteTabBar active="course" />
+    </div>
+  )
+}
+
+function CertificatePanel({
+  student,
+  course,
+  busy,
+  grade,
+  marksReady,
+  onGradeChange,
+  onGenerate,
+}: {
+  student: Student
+  course: InstituteCourse
+  busy: boolean
+  grade: string
+  marksReady: boolean
+  onGradeChange: (grade: string) => void
+  onGenerate: () => void
+}) {
+  const cert = student.certificate
+  const batchStart = student.batch_start
+  const batchEnd = student.batch_end
+  const certNo =
+    cert?.certificateNumber ||
+    student.certificate_number ||
+    deriveCertNumber(student.uid, student.issue_date)
+  const issueDate = cert?.issueDate || toDdMmYyyy(student.issue_date)
+  const verifyUrl =
+    cert?.verifyUrl ||
+    localVerifyUrl(student.uid, { number: certNo })
+  const pdfUrl = cert?.pdfUrl || cert?.downloadUrl
+  const duration = trainingDurationMonths(batchStart, batchEnd) || (course.duration_months ? String(course.duration_months) : '—')
+  const ready = Boolean(student.certificate_recorded && pdfUrl)
+  const gradeReady = CERTIFICATE_GRADES.includes(grade as (typeof CERTIFICATE_GRADES)[number])
+  const canIssue = gradeReady
+
+  const rows = [
+    ['Candidate', student.name],
+    ['Father\'s name', student.father_name || '—'],
+    ['UID / Roll No', student.uid],
+    ['Course', student.course_name || course.title],
+    ['Batch start', formatBatchDate(batchStart || '') || '—'],
+    ['Batch end', formatBatchDate(batchEnd || '') || '—'],
+    ['Training duration', duration ? `${duration} month${Number(duration) > 1 ? 's' : ''}` : '—'],
+    ['Certificate No.', certNo || '—'],
+    ['Issue date', issueDate || formatBatchDate(batchEnd || '') || 'Set on generate'],
+    ['Grade', cert?.grade || grade || 'Select grade'],
+    ['Email', student.email || '—'],
+    ['Phone', student.phone || '—'],
+    ['Video progress', student.video_proof || '—'],
+    ['Practical video', student.practical_uploaded || student.assessment_recorded ? 'Uploaded' : 'Pending'],
+    ['Private marks', marksReady ? `Saved · avg ${student.trainer_score ?? '—'}/100` : 'Optional per video'],
+    ['Certificate status', ready ? 'Issued' : canIssue ? 'Ready to issue' : 'Select a grade to generate'],
+  ]
+
+  return (
+    <div className="overflow-hidden rounded-xl bg-white ring-1 ring-slate-100">
+      <div className="flex items-center gap-2 border-b border-slate-100 bg-brand-950/5 px-3 py-2.5">
+        <Award size={16} className="text-brand-800" />
+        <p className="text-[0.75rem] font-bold text-brand-950">Certificate details</p>
+        <span
+          className={`ml-auto rounded-full px-2 py-0.5 text-[0.58rem] font-bold uppercase ${
+            ready ? 'bg-emerald-100 text-emerald-700' : canIssue ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-500'
+          }`}
+        >
+          {ready ? 'Issued' : canIssue ? 'Ready' : 'Pending'}
+        </span>
+      </div>
+      <dl className="divide-y divide-slate-50 px-3 py-1">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex gap-3 py-2">
+            <dt className="w-[38%] shrink-0 text-[0.65rem] font-semibold uppercase tracking-wide text-slate-400">
+              {label}
+            </dt>
+            <dd className="min-w-0 flex-1 text-[0.72rem] font-medium text-slate-800">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="flex flex-wrap gap-2 border-t border-slate-100 p-3">
+        <>
+            <label className="w-full">
+              <span className="mb-1 block text-[0.62rem] font-bold uppercase tracking-wide text-slate-500">
+                Grade *
+              </span>
+              <select
+                className="input-field py-2.5!"
+                value={grade}
+                onChange={(e) => onGradeChange(e.target.value)}
+              >
+                <option value="">Select grade</option>
+                {CERTIFICATE_GRADES.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {gradeReady && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={onGenerate}
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-brand-950 px-3 py-2.5 text-[0.72rem] font-semibold text-white disabled:opacity-50"
+              >
+                <FileText size={14} />
+                {busy ? 'Generating…' : 'Generate certificate'}
+              </button>
+            )}
+            {!gradeReady && (
+              <p className="w-full text-[0.65rem] text-amber-700">
+                Select Outstanding, Excellent, or Good. Generate certificate will appear after you choose a grade. Videos are not required.
+              </p>
+            )}
+          </>
+        {ready && pdfUrl ? (
+          <a
+            href={pdfUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-brand-950 px-3 py-2.5 text-[0.72rem] font-semibold text-white"
+          >
+            <ExternalLink size={14} /> Open PDF
+          </a>
+        ) : (
+          <button
+            type="button"
+            disabled
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-[0.72rem] font-semibold text-slate-400"
+          >
+            <ExternalLink size={14} /> Open PDF
+          </button>
+        )}
+        {ready ? (
+          <a
+            href={verifyUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-[0.72rem] font-semibold text-brand-900"
+          >
+            <ExternalLink size={14} /> Verify online
+          </a>
+        ) : (
+          <button
+            type="button"
+            disabled
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-[0.72rem] font-semibold text-slate-400"
+          >
+            <ExternalLink size={14} /> Verify online
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function PrivateMarksField({
+  label,
+  value,
+  saved,
+  busy,
+  onChange,
+  onSave,
+}: {
+  label: string
+  value: string
+  saved: number | null
+  busy: boolean
+  onChange: (value: string) => void
+  onSave: () => void
+}) {
+  return (
+    <div className="mt-2 rounded-lg bg-brand-950/5 p-2.5 ring-1 ring-brand-900/10">
+      <p className="text-[0.62rem] font-bold uppercase tracking-wide text-brand-900">{label}</p>
+      <div className="mt-1.5 flex items-center gap-2">
+        <input
+          type="number"
+          min={0}
+          max={100}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="input-field py-2!"
+          placeholder="0 - 100"
+        />
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onSave}
+          className="rounded-xl bg-brand-950 px-3 py-2 text-[0.68rem] font-semibold text-white disabled:opacity-50"
+        >
+          Save
+        </button>
+      </div>
+      {saved != null && (
+        <p className="mt-1 text-[0.62rem] font-medium text-brand-800">Saved: {saved}/100</p>
+      )}
+    </div>
+  )
+}
+
+function VideoUploadRow({
+  student,
+  step,
+  uploadingKey,
+  onUpload,
+  scoreValue,
+  onScoreChange,
+  onSaveMarks,
+  busy,
+}: {
+  student: Student
+  step: { id: string | number; title: string; description?: string }
+  uploadingKey: string | null
+  onUpload: (uid: string, stepId: string | number, file: File) => void
+  scoreValue: string
+  onScoreChange: (value: string) => void
+  onSaveMarks: () => void
+  busy: boolean
+}) {
+  const key = `${student.uid}:${step.id}`
+  const isUploading = uploadingKey === key
+  const saved = privateMarkFor(student, step.id)
+  return (
+    <div className="rounded-xl bg-white p-3 ring-1 ring-slate-100">
+      <p className="text-[0.75rem] font-semibold text-brand-950">{step.title}</p>
+      {step.description && <p className="mt-0.5 text-[0.65rem] text-slate-500">{step.description}</p>}
+      <label className="mt-2 flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-brand-900/20 bg-brand-950/5 py-2.5 text-[0.72rem] font-semibold text-brand-900">
+        <Video size={14} />
+        {isUploading ? 'Uploading…' : 'Upload video'}
+        <input
+          type="file"
+          accept="video/*"
+          className="hidden"
+          disabled={isUploading}
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) onUpload(student.uid, step.id, f)
+            e.target.value = ''
+          }}
+        />
+      </label>
+      <PrivateMarksField
+        label={`Private marks · ${step.title}`}
+        value={scoreValue || String(saved ?? '')}
+        saved={saved}
+        busy={busy}
+        onChange={onScoreChange}
+        onSave={onSaveMarks}
+      />
+    </div>
+  )
+}

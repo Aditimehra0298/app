@@ -20,6 +20,7 @@ from typing import Any
 
 from flask import Flask, jsonify, request, send_from_directory, abort
 from pypdf import PdfReader, PdfWriter
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
@@ -486,6 +487,29 @@ def _draw_page1_overlay(c: canvas.Canvas, fields: dict[str, str]) -> None:
     _draw_left_text(c, fields["issueDate"], meta_x, Page1Layout.ISSUE_DATE_Y, meta_size, bold=True)
     _draw_left_text(c, fields["certificateNumber"], meta_x, Page1Layout.CERT_NUMBER_Y, meta_size, bold=True)
     _draw_left_text(c, fields["delegateNumber"], meta_x, Page1Layout.DELEGATE_NUMBER_Y, meta_size, bold=True)
+
+    verify_url = str(fields.get("verifyUrl") or "").strip()
+    if verify_url:
+        try:
+            from qr_style import make_verify_qr_image
+
+            qr_img = make_verify_qr_image(verify_url)
+            buffer = io.BytesIO()
+            qr_img.save(buffer, format="PNG")
+            buffer.seek(0)
+            size = Page1Layout.QR_SIZE
+            x, top_y = Page1Layout.QR_TOP_LEFT
+            c.drawImage(
+                ImageReader(buffer),
+                x,
+                top_y - size,
+                width=size,
+                height=size,
+                mask="auto",
+                preserveAspectRatio=True,
+            )
+        except Exception:
+            logger.exception("Could not draw verification QR on certificate")
 
 
 def _draw_page2_overlay(c: canvas.Canvas, fields: dict[str, str]) -> None:

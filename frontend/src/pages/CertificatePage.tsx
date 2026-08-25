@@ -1,19 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Clock, Download, Share2 } from 'lucide-react'
 import { api } from '../api/client'
 import { useApp } from '../context/AppContext'
 import type { Student } from '../types'
 import type { CertificateResult } from '../types'
-
-function formatWait(seconds: number): string {
-  const s = Math.max(0, seconds)
-  const h = Math.floor(s / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  const sec = s % 60
-  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m ${String(sec).padStart(2, '0')}s`
-  return `${m}m ${String(sec).padStart(2, '0')}s`
-}
 
 export function CertificatePage() {
   const { config, progress, refreshProgress } = useApp()
@@ -22,27 +13,16 @@ export function CertificatePage() {
   const [cert, setCert] = useState<CertificateResult | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [now, setNow] = useState(Date.now())
   const loadingRef = useRef(false)
 
   const uid = progress?.progress.student_uid
-  const readyAtMs = useMemo(() => {
-    const raw = progress?.certificate_ready_at
-    if (!raw) return null
-    const t = Date.parse(raw)
-    return Number.isNaN(t) ? null : t
-  }, [progress?.certificate_ready_at])
-
-  const remaining = useMemo(() => {
-    if (progress?.certificate_ready) return 0
-    if (readyAtMs) return Math.max(0, Math.ceil((readyAtMs - now) / 1000))
-    return Math.max(0, progress?.wait_seconds ?? 3600)
-  }, [now, progress?.certificate_ready, progress?.wait_seconds, readyAtMs])
-
-  const canGenerate = Boolean(progress?.certificate_ready || remaining <= 0)
+  const canGenerate = Boolean(progress?.certificate_ready)
+  const awaitingTrainer = Boolean(progress?.awaiting_trainer && !canGenerate)
 
   useEffect(() => {
     if (progress?.phase === 'registration') navigate('/')
+    else if ((progress?.reupload_steps ?? []).length) navigate('/home')
+    else if (progress?.practical_reupload) navigate('/assessment')
     else if (progress?.phase === 'training') navigate('/home')
     else if (progress?.phase === 'assessment') navigate('/assessment')
   }, [progress, navigate])
@@ -53,18 +33,12 @@ export function CertificatePage() {
   }, [uid])
 
   useEffect(() => {
-    if (canGenerate) return
-    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    if (canGenerate || !awaitingTrainer) return
+    const id = window.setInterval(() => {
+      void refreshProgress()
+    }, 8000)
     return () => window.clearInterval(id)
-  }, [canGenerate])
-
-  useEffect(() => {
-    if (canGenerate || remaining > 5) return
-    const id = window.setTimeout(() => {
-      refreshProgress()
-    }, Math.max(remaining, 1) * 1000)
-    return () => window.clearTimeout(id)
-  }, [canGenerate, remaining, refreshProgress])
+  }, [canGenerate, awaitingTrainer, refreshProgress])
 
   const loadCertificate = useCallback(async () => {
     if (loadingRef.current) return
@@ -137,7 +111,7 @@ export function CertificatePage() {
             ◆
           </div>
           <h2 className="font-display text-xl font-bold text-white">
-            {cert ? 'Certificate issued' : canGenerate ? 'Your certificate' : 'Certificate processing'}
+            {cert ? 'Certificate issued' : canGenerate ? 'Your certificate' : 'Waiting for trainer'}
           </h2>
         </div>
       </div>
@@ -146,14 +120,11 @@ export function CertificatePage() {
         {!canGenerate && !cert && (
           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-center">
             <Clock className="mx-auto mb-2 text-amber-600" size={28} />
-            <p className="font-display text-base font-bold text-brand-900">Generating in 1 hour</p>
+            <p className="font-display text-base font-bold text-brand-900">Trainer is checking your videos</p>
             <p className="mt-1 text-sm text-slate-600">
-              Videos and assessment are done. Your certificate will appear here after this wait.
+              Your pathway videos and 2-minute practical are submitted. After the trainer verifies them,
+              you can download the certificate and scan the QR to prove it.
             </p>
-            <p className="mt-3 font-display text-2xl font-bold tabular-nums text-brand-900">
-              {formatWait(remaining)}
-            </p>
-            <p className="mt-1 text-[0.7rem] uppercase tracking-wide text-slate-400">Time remaining</p>
           </div>
         )}
 
@@ -246,7 +217,7 @@ export function CertificatePage() {
           </>
         ) : (
           <button type="button" className="btn-primary" disabled>
-            {canGenerate ? (busy ? 'Certificate coming…' : 'Unlocking certificate') : `Wait ${formatWait(remaining)}`}
+            {canGenerate ? (busy ? 'Certificate coming…' : 'Unlocking certificate') : 'Waiting for trainer'}
           </button>
         )}
       </div>

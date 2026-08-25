@@ -54,8 +54,19 @@ Edit `config.py` for branding, modules, assessment questions, and programmes.
 
 ## Deploy
 
-Set `SECRET_KEY` and `PUBLIC_BASE_URL` (HTTPS). Build frontend before deploy:
-```bash
-cd frontend && npm run build
-```
-Use included `Procfile` for Render/Railway.
+One process serves both the **institute app** and the **public verify website**.
+Both read the same `DATABASE_URL` (MySQL or SQLite).
+
+1. Build frontend: `cd frontend && npm run build`
+2. Set production env:
+   - `DATABASE_URL` — app MySQL/SQLite (students + certificates)
+   - `PUBLIC_BASE_URL` — HTTPS URL of this deployment (QR + PDF + verify links)
+   - `SECRET_KEY` — strong random secret
+   - optional `VERIFY_CORS_ORIGINS` — comma-separated extra origins for the verify API
+3. Start: `gunicorn --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120 app:app`  
+   (or Docker / `Procfile`)
+
+Verify endpoints (same host as the app):
+- Website: `/verify`
+- API: `/api/certificates/verify?uid=21PLM001&number=ET/PPT/001/2026`
+- Health: `/health`

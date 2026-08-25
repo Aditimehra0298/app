@@ -11,7 +11,7 @@ export function Layout() {
   if (loading) return <SplashScreen />
 
   const loggedIn = Boolean(progress?.progress.candidate_name)
-  const isAuthScreen = location.pathname === '/' || location.pathname === '/admission'
+  const isAuthScreen = location.pathname === '/'
   const isHome = location.pathname === '/home'
   const isProfile = location.pathname === '/profile'
 

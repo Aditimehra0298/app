@@ -17,8 +17,16 @@ export interface Student {
   uploaded_steps?: number
   expected_steps?: number
   video_proof?: string
+  videos?: VerifyVideoProof[]
   assessment_recorded?: boolean
   certificate_recorded?: boolean
+  trainer_verified?: boolean
+  trainer_score?: number | null
+  week_scores?: Record<string, number>
+  trainer_grade?: string | null
+  all_videos_complete?: boolean
+  practical_uploaded?: boolean
+  certificate?: CertificateResult
 }
 
 export interface Brand {
@@ -38,6 +46,7 @@ export interface TrainingStep {
   max_seconds: number
   icon: string
   image: string
+  kind?: string
 }
 
 export interface Question {
@@ -63,6 +72,7 @@ export interface AppConfig {
   defaultCourse: string
   admissionCourses?: string[]
   trainingSetup?: TrainingSetup
+  logoUrl?: string
   images: {
     hero: string
     splash: string
@@ -75,6 +85,18 @@ export interface TrainingSetup {
   course_name: string
   batch_months: number
   pathway_weeks: number
+}
+
+export interface InstituteCourse {
+  id: string
+  title: string
+  description: string
+  image: string
+  built: boolean
+  duration_months?: number
+  batch_start?: string
+  batch_end?: string
+  steps?: { title: string; description: string }[]
 }
 
 export interface Progress {
@@ -103,14 +125,23 @@ export interface ProgressResponse {
   certificate_ready?: boolean
   certificate_ready_at?: string | null
   wait_seconds?: number
+  trainer_verified?: boolean
+  awaiting_trainer?: boolean
+  assessment_done?: boolean
+  reupload_steps?: number[]
+  practical_reupload?: boolean
 }
 
 export interface VerifyVideoProof {
-  id: number
+  id: number | string
   title: string
   description: string
   image: string
   uploaded: boolean
+  kind?: string
+  reviewStatus?: string
+  privateScore?: number | null
+  locked?: boolean
   videoUrl: string | null
 }
 
@@ -148,4 +179,5 @@ export interface CertificateResult {
   issueDate?: string
   templateFile?: string
   wait_seconds?: number
+  awaiting_trainer?: boolean
 }

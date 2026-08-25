@@ -13,4 +13,12 @@ data/*.db
 data/*.sqlite
 data/*.sqlite3
 frontend/node_modules/
+deploy/hostinger-static/
+android-app/.gradle/
+android-app/build/
+android-app/app/build/
+android-app/local.properties
+*.apk
+*.aab
+!android-app/gradle/wrapper/gradle-wrapper.jar
 

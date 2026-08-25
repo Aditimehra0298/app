@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { CheckCircle2, ChevronRight, Lock, Video } from 'lucide-react'
+import { CheckCircle2, ChevronRight, Lock, User, Video } from 'lucide-react'
 import { api } from '../api/client'
 import { useApp } from '../context/AppContext'
+import { LogoutButton } from '../components/LogoutButton'
+import { OrgLogo } from '../components/OrgLogo'
 import type { Student, TrainingStep } from '../types'
 
 function stepStatus(
@@ -20,13 +22,24 @@ export function StudentHomePage() {
   const { config, progress, refreshProgress } = useApp()
   const navigate = useNavigate()
   const [student, setStudent] = useState<Student | null>(null)
-  const tapCount = useRef(0)
-  const tapTimer = useRef<number | null>(null)
 
   const p = progress?.progress
   const completed = p?.completed_steps ?? []
   const currentIndex = progress?.completed_count ?? 0
   const steps = config?.steps ?? []
+
+  const reuploadSteps = progress?.reupload_steps ?? []
+  const practicalRedo = Boolean(progress?.practical_reupload)
+
+  const openStep = (step: TrainingStep, status: 'done' | 'current' | 'locked') => {
+    const needsRedo = step.kind === 'practical' ? practicalRedo : reuploadSteps.includes(step.id)
+    if (status === 'locked' && !needsRedo) return
+    if (step.kind === 'practical') {
+      navigate('/assessment')
+      return
+    }
+    navigate(needsRedo ? `/modules?step=${step.id}` : '/modules')
+  }
 
   useEffect(() => {
     refreshProgress()
@@ -46,25 +59,9 @@ export function StudentHomePage() {
 
   if (!config || !p?.candidate_name) return null
 
-  const photo = p.image_path || student?.image_path || '/static/icons/icon-192.png'
   const course = p.course_name || student?.course_name || config.defaultCourse || 'Plumbing Foundational Course'
   const batch = student?.batch_duration || student?.batch_start || 'Training batch not set'
   const hero = config.images.hero || '/static/images/hero-plumbing.jpg'
-
-  const openStep = (_step: TrainingStep, status: 'done' | 'current' | 'locked') => {
-    if (status === 'locked') return
-    if (status === 'current') navigate('/modules')
-  }
-
-  const onLogoTap = () => {
-    tapCount.current += 1
-    if (tapTimer.current) window.clearTimeout(tapTimer.current)
-    tapTimer.current = window.setTimeout(() => {
-      tapCount.current = 0
-    }, 1200)
-    // Safety: do NOT expose admin panel shortcut from learner screen.
-    // Tap counter is kept only to debounce the action.
-  }
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-slate-50">
@@ -79,18 +76,26 @@ export function StudentHomePage() {
 
           <div className="relative z-10 flex min-h-[clamp(14rem,38vh,22rem)] flex-col px-[var(--pad-x)] pb-6 pt-[max(env(safe-area-inset-top),0.75rem)]">
             <div className="mb-2 flex items-start justify-between gap-3">
-              <button type="button" onClick={onLogoTap} className="flex items-center gap-2" aria-label="SFT">
-                <img src="/static/images/sft-logo.png?v=2" alt="" className="h-8 w-8 rounded-lg object-cover ring-1 ring-white/30" />
-                <span className="text-xs font-bold tracking-wide text-white/90">SFT</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => navigate('/profile')}
-                className="shrink-0 rounded-full bg-white/15 p-0.5 ring-2 ring-white/50 shadow-lg"
-                aria-label="Open profile"
-              >
-                <img src={photo} alt="" className="h-12 w-12 rounded-full object-cover" />
-              </button>
+              <div className="flex items-center gap-2">
+                <OrgLogo
+                  alt={config.brand.short_name ?? 'SFT'}
+                  className="h-11 w-11 object-contain"
+                />
+                <span className="text-xs font-bold tracking-wide text-white/90">
+                  {config.brand.short_name ?? 'SFT'}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <LogoutButton />
+                <button
+                  type="button"
+                  onClick={() => navigate('/profile')}
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white/12 ring-1 ring-white/30 shadow-md active:scale-95"
+                  aria-label="Open profile"
+                >
+                  <User size={18} strokeWidth={2.4} />
+                </button>
+              </div>
             </div>
 
             <div className="mt-auto grid grid-cols-2 gap-2.5">
@@ -120,13 +125,19 @@ export function StudentHomePage() {
           <div className="mb-3 flex items-center justify-between">
             <h2 className="font-display text-base font-bold text-brand-900">Pathway</h2>
             <span className="rounded-full bg-brand-900/10 px-2.5 py-0.5 text-xs font-semibold text-brand-900">
-              {completed.length}/{steps.length} done
+              {steps.filter((s) => completed.includes(s.id) || (s.kind === 'practical' && progress?.assessment_done)).length}/{steps.length} done
             </span>
           </div>
 
           <ul className="space-y-3">
             {steps.map((step, stepIndex) => {
-              const status = stepStatus(stepIndex, step.id, completed, currentIndex)
+              const needsRedo =
+                step.kind === 'practical' ? practicalRedo : reuploadSteps.includes(step.id)
+              const status = needsRedo
+                ? 'current'
+                : step.kind === 'practical' && progress?.assessment_done
+                  ? 'done'
+                  : stepStatus(stepIndex, step.id, completed, currentIndex)
               const isCurrent = status === 'current'
               const isDone = status === 'done'
               const isLocked = status === 'locked'
@@ -163,7 +174,12 @@ export function StudentHomePage() {
                       </p>
                       {isCurrent && (
                         <span className="mt-1.5 inline-flex items-center gap-1 text-[0.65rem] font-semibold text-accent-500">
-                          <Video size={12} /> Tap to record video
+                          <Video size={12} />{' '}
+                          {needsRedo
+                            ? 'Trainer asked to re-upload'
+                            : step.kind === 'practical'
+                              ? 'Tap for 2-min assessment'
+                              : 'Tap to record video'}
                         </span>
                       )}
                     </div>
@@ -186,15 +202,7 @@ export function StudentHomePage() {
               className="btn-primary mt-4"
               onClick={() => navigate('/certificate')}
             >
-              {progress.certificate_ready ? 'Open certificate' : 'Certificate processing'}
-            </button>
-          ) : progress?.all_steps_done ? (
-            <button
-              type="button"
-              className="btn-primary mt-4"
-              onClick={() => navigate('/assessment')}
-            >
-              Continue to assessment
+              {progress.certificate_ready ? 'Download certificate' : 'Waiting for trainer'}
             </button>
           ) : null}
         </div>

@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { api } from '../api/client'
 import { useApp } from '../context/AppContext'
+import { LogoutButton } from '../components/LogoutButton'
+import { OrgLogo } from '../components/OrgLogo'
 import type { Student } from '../types'
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -55,7 +57,9 @@ export function ProfilePage() {
         >
           <ArrowLeft size={20} />
         </button>
-        <h1 className="font-display text-base font-bold">Profile</h1>
+        <OrgLogo alt="" className="h-9 w-9 object-contain" />
+        <h1 className="flex-1 font-display text-base font-bold">Profile</h1>
+        <LogoutButton />
       </header>
 
       <div className="flex flex-col items-center bg-brand-950 px-4 pb-8 pt-4 text-white">

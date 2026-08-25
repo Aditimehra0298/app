@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.SFT" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">@color/sft_green</item>
+        <item name="android:colorPrimaryDark">@color/sft_dark</item>
+        <item name="android:statusBarColor">@color/sft_dark</item>
+        <item name="android:navigationBarColor">@color/sft_dark</item>
+        <item name="android:windowBackground">@color/sft_dark</item>
+        <item name="android:windowFullscreen">false</item>
+    </style>
+</resources>

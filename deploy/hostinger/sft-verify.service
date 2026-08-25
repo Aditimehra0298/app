@@ -1,0 +1,16 @@
+[Unit]
+Description=SFT certificate verify website
+After=network.target mysql.service
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/sft-verify
+EnvironmentFile=/var/www/sft-verify/.env
+Environment=PATH=/var/www/sft-verify/.venv/bin
+ExecStart=/var/www/sft-verify/.venv/bin/gunicorn --bind 127.0.0.1:5001 --workers 2 --threads 4 --timeout 120 app:app
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
