@@ -1,4 +1,4 @@
-const CACHE = "sf-training-v8";
+const CACHE = "sf-training-v9";
 const ASSETS = ["/static/icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {

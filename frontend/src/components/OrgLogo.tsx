@@ -1,6 +1,6 @@
 import { useApp } from '../context/AppContext'
 
-const FALLBACK = '/static/images/sft-logo-full.png?v=5'
+const FALLBACK = '/static/images/sft-logo-full.png?v=6'
 
 type Props = {
   className?: string
