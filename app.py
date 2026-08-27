@@ -109,7 +109,16 @@ PLUMBING_TEMPLATE_FILE = "Professional plumbing tarining program.pdf"
 CERTIFICATE_API_FALLBACK = "https://certificate-generation-navy.vercel.app/generate-certificate"
 SFTLMS_VERIFY_URL = os.environ.get("SFTLMS_VERIFY_URL", "https://assessment.sftlms.com/verify").rstrip("/")
 # Passport photo box on the plumbing landscape template (PDF points, origin bottom-left).
-PLUMBING_PHOTO_BOX = {"x": 1193.0, "y": 552.0, "w": 159.0, "h": 238.0}
+# Fallback when the orange frame cannot be auto-detected on the API PDF (~1086×814.5).
+PLUMBING_PHOTO_BOX = {"x": 881.5, "y": 445.5, "w": 136.0, "h": 188.0}
+PLUMBING_PHOTO_BOX_LEGACY = {"x": 1193.0, "y": 552.0, "w": 159.0, "h": 238.0}
+PLUMBING_PHOTO_PAGE = {"w": 1086.0, "h": 814.5}
+PLUMBING_PHOTO_PAGE_LEGACY = {"w": 1492.0, "h": 1054.0}
+# Corner radius matching the template’s rounded photo frame (PDF points).
+PLUMBING_PHOTO_RADIUS = 10.0
+# Design-space size used by the n8n HTML→PDF plumbing certificate (before 0.24 scale).
+PLUMBING_DESIGN_SIZE = {"w": 4525.0, "h": 3393.75}
+PLUMBING_PAGE_SCALE = 0.24
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 STUDENT_PHOTOS_DIR = BASE_DIR / "static" / "students"
 STUDENT_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
@@ -666,11 +675,167 @@ def _crop_photo_to_box(photo_path: Path, box_w: float, box_h: float) -> Path:
         img = img.crop((left, 0, left + new_w, h))
     else:
         new_h = int(w / target_ratio)
-        top = (h - new_h) // 2
+        # Bias crop upward so face/turban stay in frame on tall portraits.
+        top = max(0, (h - new_h) // 5)
+        if top + new_h > h:
+            top = h - new_h
         img = img.crop((0, top, w, top + new_h))
     out = OUTPUT_DIR / f"photo-crop-{uuid.uuid4().hex[:10]}.jpg"
-    img.save(out, "JPEG", quality=90)
+    img.save(out, "JPEG", quality=92)
     return out
+
+
+def _cluster_positions(values: list[int], gap: int = 6) -> list[tuple[int, int]]:
+    if not values:
+        return []
+    values = sorted(values)
+    groups: list[list[int]] = [[values[0]]]
+    for value in values[1:]:
+        if value - groups[-1][-1] <= gap:
+            groups[-1].append(value)
+        else:
+            groups.append([value])
+    return [(group[0], group[-1]) for group in groups]
+
+
+def _detect_plumbing_photo_box(page) -> dict[str, float] | None:
+    """
+    Find the orange passport frame on the certificate background image and map it
+    into PDF user-space. Returns None if detection is uncertain (caller uses fallback).
+    """
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+
+    resources = page.get("/Resources")
+    if resources is None:
+        return None
+    resources = resources.get_object()
+    xobjects = resources.get("/XObject")
+    if xobjects is None:
+        return None
+    xobjects = xobjects.get_object()
+
+    bg = None
+    bg_w = bg_h = 0
+    for name in xobjects:
+        obj = xobjects[name].get_object()
+        if obj.get("/Subtype") != "/Image":
+            continue
+        width = int(obj.get("/Width") or 0)
+        height = int(obj.get("/Height") or 0)
+        if width * height <= bg_w * bg_h:
+            continue
+        try:
+            raw = obj.get_data()
+            bg = Image.frombytes("RGB", (width, height), raw)
+            bg_w, bg_h = width, height
+        except Exception:
+            continue
+    if bg is None or bg_w < 800 or bg_h < 600:
+        return None
+
+    pixels = bg.load()
+
+    def is_orange(r: int, g: int, b: int) -> bool:
+        return r > 190 and 100 < g < 195 and b < 145 and (r - b) > 70 and (r - g) > 20
+
+    # Restrict search to the upper-right passport slot (ignore footer gold / module accents).
+    x_min, x_max = int(bg_w * 0.78), int(bg_w * 0.97)
+    y_min, y_max = int(bg_h * 0.18), int(bg_h * 0.52)
+
+    x_hits: dict[int, int] = {}
+    y_hits: dict[int, int] = {}
+    for x in range(x_min, x_max):
+        for y in range(y_min, y_max):
+            if is_orange(*pixels[x, y]):
+                x_hits[x] = x_hits.get(x, 0) + 1
+                y_hits[y] = y_hits.get(y, 0) + 1
+
+    vert = _cluster_positions([x for x, count in x_hits.items() if count >= 80], gap=4)
+    horz = _cluster_positions([y for y, count in y_hits.items() if count >= 50], gap=4)
+    if len(vert) < 2 or len(horz) < 2:
+        return None
+
+    # Choose the strongest left/right pair with portrait proportions.
+    best = None
+    for i, (l0, l1) in enumerate(vert[:-1]):
+        for r0, r1 in vert[i + 1 :]:
+            left, right = l1, r0
+            width_px = right - left
+            if width_px < 140 or width_px > 240:
+                continue
+            for j, (t0, t1) in enumerate(horz[:-1]):
+                for b0, b1 in horz[j + 1 :]:
+                    top, bottom = t1, b0
+                    height_px = bottom - top
+                    if height_px < 200 or height_px > 320:
+                        continue
+                    aspect = width_px / height_px
+                    if aspect < 0.55 or aspect > 0.85:
+                        continue
+                    score = abs(aspect - 0.72)
+                    if best is None or score < best[0]:
+                        best = (score, left, top, right, bottom)
+    if best is None:
+        return None
+
+    _, left, top, right, bottom = best
+    inset = max(5, int(min(right - left, bottom - top) * 0.03))
+    left += inset
+    right -= inset
+    top += inset
+    bottom -= inset
+
+    page_top = float(page.mediabox.top)
+    design_w = PLUMBING_DESIGN_SIZE["w"]
+    design_h = PLUMBING_DESIGN_SIZE["h"]
+    scale = PLUMBING_PAGE_SCALE
+
+    def px_to_pdf(ix: float, iy_top: float) -> tuple[float, float]:
+        design_x = design_w * ix / bg_w
+        design_y = design_h * iy_top / bg_h
+        return scale * design_x, page_top - scale * design_y
+
+    x0, y_top = px_to_pdf(left, top)
+    x1, y_bot = px_to_pdf(right, bottom)
+    box = {
+        "x": round(min(x0, x1), 2),
+        "y": round(min(y_top, y_bot), 2),
+        "w": round(abs(x1 - x0), 2),
+        "h": round(abs(y_top - y_bot), 2),
+    }
+
+    # Reject boxes that drift too far from the known-good plumbing frame.
+    ref = PLUMBING_PHOTO_BOX
+    if abs(box["w"] - ref["w"]) > 25 or abs(box["h"] - ref["h"]) > 30:
+        return None
+    if abs(box["x"] - ref["x"]) > 35 or abs(box["y"] - ref["y"]) > 35:
+        return None
+    return box
+
+
+def _plumbing_photo_box_for_page(page) -> dict[str, float]:
+    """Resolve the passport photo box for this certificate page."""
+    detected = _detect_plumbing_photo_box(page)
+    if detected:
+        return detected
+
+    page_w = float(page.mediabox.width)
+    page_h = float(page.mediabox.height)
+    api_w, api_h = PLUMBING_PHOTO_PAGE["w"], PLUMBING_PHOTO_PAGE["h"]
+    legacy_w, legacy_h = PLUMBING_PHOTO_PAGE_LEGACY["w"], PLUMBING_PHOTO_PAGE_LEGACY["h"]
+    if abs(page_w - api_w) <= 40 and abs(page_h - api_h) <= 40:
+        return dict(PLUMBING_PHOTO_BOX)
+    if abs(page_w - legacy_w) <= 80 and abs(page_h - legacy_h) <= 80:
+        return dict(PLUMBING_PHOTO_BOX_LEGACY)
+    box = dict(PLUMBING_PHOTO_BOX)
+    box["x"] *= page_w / api_w
+    box["y"] *= page_h / api_h
+    box["w"] *= page_w / api_w
+    box["h"] *= page_h / api_h
+    return box
 
 
 def _stamp_student_photo_on_pdf(pdf_bytes: bytes, image_path: str | None) -> bytes:
@@ -680,31 +845,31 @@ def _stamp_student_photo_on_pdf(pdf_bytes: bytes, image_path: str | None) -> byt
 
     from pypdf import PdfReader, PdfWriter
     from reportlab.pdfgen import canvas as pdf_canvas
+    from reportlab.lib.utils import ImageReader
 
     reader = PdfReader(io.BytesIO(pdf_bytes))
     page = reader.pages[0]
     page_w = float(page.mediabox.width)
     page_h = float(page.mediabox.height)
-    box = dict(PLUMBING_PHOTO_BOX)
-    if abs(page_w - 1492) > 80 or abs(page_h - 1054) > 80:
-        # Scale the plumbing box if the page is a similar landscape certificate.
-        box["x"] *= page_w / 1492.0
-        box["y"] *= page_h / 1054.0
-        box["w"] *= page_w / 1492.0
-        box["h"] *= page_h / 1054.0
+    box = _plumbing_photo_box_for_page(page)
+    radius = PLUMBING_PHOTO_RADIUS * (box["w"] / max(PLUMBING_PHOTO_BOX["w"], 1.0))
 
     cropped = _crop_photo_to_box(photo, box["w"], box["h"])
     overlay_buf = io.BytesIO()
-    c = pdf_canvas.Canvas(overlay_buf, pagesize=(page_w, page_h))
+    # Match certificate user space (API pages often use mediabox top ≈ 822).
+    canvas_h = float(page.mediabox.top) if float(page.mediabox.top) > page_h else page_h
+    c = pdf_canvas.Canvas(overlay_buf, pagesize=(page_w, canvas_h))
+    clip = c.beginPath()
+    clip.roundRect(box["x"], box["y"], box["w"], box["h"], radius)
+    c.clipPath(clip, stroke=0)
     c.drawImage(
-        str(cropped),
+        ImageReader(str(cropped)),
         box["x"],
         box["y"],
         width=box["w"],
         height=box["h"],
-        preserveAspectRatio=True,
+        preserveAspectRatio=False,
         mask="auto",
-        anchor="c",
     )
     c.save()
     overlay_buf.seek(0)
