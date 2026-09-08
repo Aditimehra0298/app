@@ -6,7 +6,7 @@ import { api } from '../api/client'
 import { LogoutButton } from '../components/LogoutButton'
 
 const EUROTECH_LOGO = '/static/images/eurotech-logo.png'
-const SF_LOGO = '/static/images/sft-home-logo.png?v=4'
+const SF_LOGO = '/static/images/sft-home-logo.png?v=5'
 
 type InstituteProfile = {
   uid: string

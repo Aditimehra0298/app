@@ -24,7 +24,7 @@ interface StepDraft {
 }
 
 const EUROTECH_LOGO = '/static/images/eurotech-logo.png'
-const SF_HOME_LOGO = '/static/images/sft-home-logo.png?v=3'
+const SF_HOME_LOGO = '/static/images/sft-home-logo.png?v=5'
 
 function formatBatchDate(iso: string) {
   if (!iso) return ''

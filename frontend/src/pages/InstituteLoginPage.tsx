@@ -4,7 +4,7 @@ import { ArrowRight } from 'lucide-react'
 import { api } from '../api/client'
 import { useApp } from '../context/AppContext'
 
-const LOGIN_LOGO = '/static/images/sft-login-logo.png?v=3'
+const LOGIN_LOGO = '/static/images/sft-login-logo.png?v=5'
 
 export function InstituteLoginPage() {
   const { config } = useApp()
