@@ -310,10 +310,18 @@ body.verify-website-mode {
   @apply text-brand-900;
 }
 
-/* Keyboard open on Android/iOS: keep focused field visible */
+/* Keyboard open on Android/iOS: shrink shell and hide bottom nav */
 body.keyboard-open .app-shell {
   height: var(--app-height);
   max-height: var(--app-height);
+}
+
+body.keyboard-open .institute-tab-bar {
+  display: none !important;
+}
+
+body.keyboard-open .screen-scroll {
+  padding-bottom: max(env(safe-area-inset-bottom), 1rem) !important;
 }
 
 select,

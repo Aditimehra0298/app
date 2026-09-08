@@ -86,6 +86,23 @@ export const api = {
       verified?: boolean
       message?: string
       certificate?: Record<string, string | number | boolean | null>
+      unlock?: {
+        required?: boolean
+        unlocked?: boolean
+        amount?: number
+        currency?: string
+        label?: string
+        razorpayKeyId?: string | null
+        configured?: boolean
+        options?: Array<{
+          region?: string
+          currency?: string
+          amount?: number
+          label?: string
+          title?: string
+          methods?: string
+        }>
+      }
       proofs?: {
         videos?: import('../types').VerifyVideoProof[]
         videosComplete?: boolean
@@ -100,6 +117,53 @@ export const api = {
       `/api/certificates/verify?uid=${encodeURIComponent(uid)}&number=${encodeURIComponent(number)}&q=${encodeURIComponent(number)}`,
     ),
 
+  createVerifyUnlockOrder: (payload: {
+    uid: string
+    number: string
+    email?: string
+    region?: 'national' | 'international'
+    currency?: 'INR' | 'USD'
+  }) =>
+    request<{
+      ok: boolean
+      message?: string
+      keyId?: string
+      orderId?: string
+      amount?: number
+      currency?: string
+      label?: string
+      region?: string
+      name?: string
+      description?: string
+      prefill?: { email?: string; name?: string; contact?: string }
+    }>('/api/certificates/verify/unlock/order', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify(payload),
+    }),
+
+  confirmVerifyUnlock: (payload: {
+    uid: string
+    number: string
+    email?: string
+    razorpay_order_id: string
+    razorpay_payment_id: string
+    razorpay_signature: string
+  }) =>
+    request<{
+      ok: boolean
+      unlocked?: boolean
+      message?: string
+      token?: string
+      videos?: import('../types').VerifyVideoProof[]
+      pdfUrl?: string
+      downloadUrl?: string
+    }>('/api/certificates/verify/unlock/confirm', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify(payload),
+    }),
+
   requestVerifyVideoAccess: (payload: {
     uid: string
     number: string
@@ -110,22 +174,66 @@ export const api = {
   }) =>
     request<{
       ok: boolean
+      pending?: boolean
       token?: string
       videos?: import('../types').VerifyVideoProof[]
       message?: string
+      request?: { status?: string }
     }>('/api/certificates/verify/video-access', {
       method: 'POST',
       headers: jsonHeaders,
       body: JSON.stringify(payload),
     }),
 
-  adminStatus: () => request<{ authenticated: boolean; institute?: { uid: string; name: string } | null }>('/api/admin/status'),
-
-  adminLogin: (uid: string, email: string) =>
-    request<{ success: boolean; institute?: { uid: string; name: string } }>('/api/admin/login', {
+  checkVerifyVideoAccess: (payload: { uid: string; email: string }) =>
+    request<{
+      ok: boolean
+      status?: 'none' | 'pending' | 'approved' | 'rejected' | 'expired'
+      token?: string
+      videos?: import('../types').VerifyVideoProof[]
+      message?: string
+    }>('/api/certificates/verify/video-access/status', {
       method: 'POST',
       headers: jsonHeaders,
-      body: JSON.stringify({ uid, email }),
+      body: JSON.stringify(payload),
+    }),
+
+  adminStatus: () =>
+    request<{
+      authenticated: boolean
+      passwordRequired?: boolean
+      institute?: { uid: string; name: string; email?: string } | null
+    }>('/api/admin/status'),
+
+  adminLogin: (uid: string, email: string, password?: string) =>
+    request<{ success: boolean; institute?: { uid: string; name: string; email?: string } }>('/api/admin/login', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ uid, email, password: password || '' }),
+    }),
+
+  adminProfile: () =>
+    request<{
+      success: boolean
+      institute: {
+        uid: string
+        name: string
+        email: string
+        logoUrl?: string
+        passwordSet?: boolean
+        courses?: number
+      }
+    }>('/api/admin/profile'),
+
+  adminChangePassword: (payload: {
+    currentPassword?: string
+    newPassword: string
+    confirmPassword: string
+  }) =>
+    request<{ success: boolean; message: string }>('/api/admin/password', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify(payload),
     }),
 
   adminLogout: () => request<{ success: boolean }>('/api/admin/logout', { method: 'POST' }),
@@ -228,10 +336,24 @@ export const api = {
         organisation: string
         email: string
         location: string
+        status?: string
         createdAt?: string
         expiresAt?: string
+        approvedAt?: string
       }>
     }>('/api/admin/video-access-requests'),
+
+  adminApproveVideoAccess: (requestId: number) =>
+    request<{ success: boolean; message: string }>(
+      `/api/admin/video-access-requests/${requestId}/approve`,
+      { method: 'POST' },
+    ),
+
+  adminRejectVideoAccess: (requestId: number) =>
+    request<{ success: boolean; message: string }>(
+      `/api/admin/video-access-requests/${requestId}/reject`,
+      { method: 'POST' },
+    ),
 
   adminVerifyVideos: (uid: string) =>
     request<{
@@ -276,6 +398,38 @@ export const api = {
         method: 'POST',
         headers: jsonHeaders,
         body: JSON.stringify({ grade }),
+      },
+    ),
+
+  adminSendCertificateEmail: (uid: string, email?: string) =>
+    request<{ success: boolean; message: string; email?: string; student?: import('../types').Student }>(
+      `/api/admin/students/${encodeURIComponent(uid)}/send-certificate`,
+      {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify(email ? { email } : {}),
+      },
+    ),
+
+  adminUpdateStudent: (
+    uid: string,
+    data: {
+      name: string
+      father_name?: string
+      email?: string
+      phone?: string
+      batch_start?: string
+      batch_end?: string
+      issue_date?: string | null
+      course_name?: string
+    },
+  ) =>
+    request<{ success: boolean; message: string; student: import('../types').Student }>(
+      `/api/admin/students/${encodeURIComponent(uid)}`,
+      {
+        method: 'PUT',
+        headers: jsonHeaders,
+        body: JSON.stringify(data),
       },
     ),
 

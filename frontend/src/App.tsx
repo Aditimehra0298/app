@@ -8,6 +8,7 @@ import { VerifyPage } from './pages/VerifyPage'
 import { InstituteLoginPage } from './pages/InstituteLoginPage'
 import { InstituteHomePage } from './pages/InstituteHomePage'
 import { InstituteStudentsPage } from './pages/InstituteStudentsPage'
+import { InstituteProfilePage } from './pages/InstituteProfilePage'
 import { TrainingDetailPage } from './pages/TrainingDetailPage'
 import { ProfilePage } from './pages/ProfilePage'
 
@@ -26,6 +27,7 @@ export default function App() {
                   <Route path="/" element={<InstituteLoginPage />} />
                   <Route path="/admission" element={<Navigate to="/" replace />} />
                   <Route path="/home" element={<InstituteHomePage />} />
+                  <Route path="/institute-profile" element={<InstituteProfilePage />} />
                   <Route path="/students" element={<InstituteStudentsPage />} />
                   <Route path="/training/:courseId" element={<TrainingDetailPage />} />
                   <Route path="/admin" element={<Navigate to="/home" replace />} />

@@ -1,5 +1,6 @@
 import { House, Plus, Users } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { useKeyboardOpen } from '../hooks/useKeyboardOpen'
 
 type Tab = 'home' | 'course' | 'student'
 
@@ -10,9 +11,12 @@ interface Props {
 
 export function InstituteTabBar({ active, onCourseClick }: Props) {
   const navigate = useNavigate()
+  const keyboardOpen = useKeyboardOpen()
+
+  if (keyboardOpen) return null
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 px-3 pb-[max(env(safe-area-inset-bottom),0.55rem)]">
+    <div className="institute-tab-bar pointer-events-none fixed inset-x-0 bottom-0 z-30 mx-auto max-w-[430px] px-3 pb-[max(env(safe-area-inset-bottom),0.55rem)]">
       <div className="pointer-events-auto mx-auto flex items-end justify-between rounded-[1.9rem] bg-brand-950 px-5 py-3 text-white shadow-[0_-10px_28px_rgba(5,46,34,0.38)] ring-1 ring-white/10">
         <button
           type="button"

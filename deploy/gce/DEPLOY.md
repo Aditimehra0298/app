@@ -112,6 +112,7 @@ CERTIFICATE_API_URL=https://damnart-ai-guladab.n8n-wsk.com/webhook-test/certific
 ADMIN_UID=21EUROTECH001
 ADMIN_EMAIL=eurotech@gmail.com
 INSTITUTE_NAME=Eurotech
+VIDEO_ACCESS_NOTIFY_EMAIL=aditimehra0298@gmail.com
 ```
 
 ---

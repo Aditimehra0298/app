@@ -5,12 +5,16 @@ Sustainable Futures Training App — video proof, trade assessment, and certific
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import io
 import json
 import os
 import re
 import secrets
+import smtplib
 import ssl
+import time
 import uuid
 import urllib.error
 import urllib.parse
@@ -18,6 +22,8 @@ import urllib.request
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from flask import (
     Flask,
     abort,
@@ -74,7 +80,15 @@ from db import (
     clear_videos_verified,
     create_video_access_request,
     get_valid_video_access,
+    get_latest_video_access_for_visitor,
+    get_video_access_request_by_id,
+    approve_video_access_request,
+    reject_video_access_request,
     list_video_access_requests,
+    grant_paid_verify_unlock,
+    create_verify_unlock_payment,
+    get_verify_unlock_payment_by_order,
+    mark_verify_unlock_paid,
     sync_all_app_data_to_lms,
 )
 from qr_style import qr_png_bytes
@@ -86,6 +100,7 @@ CERTIFICATES_FILE = DATA_DIR / "certificates.json"
 PATHWAY_FILE = DATA_DIR / "assessment_path.json"
 TRAINING_SETUP_FILE = DATA_DIR / "training_setup.json"
 INSTITUTE_COURSES_FILE = DATA_DIR / "institute_courses.json"
+INSTITUTE_AUTH_FILE = DATA_DIR / "institute_auth.json"
 PATHWAY_ASSETS_DIR = BASE_DIR / "static" / "pathway"
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 TEMPLATES_PDF_DIR = BASE_DIR / "templates_pdf"
@@ -98,11 +113,48 @@ PATHWAY_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
 ADMIN_UID = os.environ.get("ADMIN_UID", "21EUROTECH001").strip().upper()
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "eurotech@gmail.com").strip().lower()
+VIDEO_ACCESS_NOTIFY_EMAIL = (
+    os.environ.get("VIDEO_ACCESS_NOTIFY_EMAIL", "").strip().lower() or ADMIN_EMAIL
+)
 INSTITUTE_NAME = os.environ.get("INSTITUTE_NAME", "Eurotech").strip() or "Eurotech"
+RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "").strip()
+RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "").strip()
+# National (India): INR unlock — UPI / cards / netbanking / wallets
+VERIFY_UNLOCK_INR_AMOUNT = int(
+    os.environ.get("VERIFY_UNLOCK_INR_AMOUNT")
+    or os.environ.get("VERIFY_UNLOCK_AMOUNT", "85000")
+    or "85000"
+)
+VERIFY_UNLOCK_INR_LABEL = (
+    os.environ.get("VERIFY_UNLOCK_INR_LABEL", "$10").strip() or "$10"
+)
+# International: USD unlock — cards / international methods
+VERIFY_UNLOCK_USD_AMOUNT = int(os.environ.get("VERIFY_UNLOCK_USD_AMOUNT", "1000") or "1000")
+VERIFY_UNLOCK_USD_LABEL = (
+    os.environ.get("VERIFY_UNLOCK_USD_LABEL", "$10").strip() or "$10"
+)
+# Single public label shown on verify (one price in dollars for everyone)
+VERIFY_UNLOCK_AMOUNT = int(
+    os.environ.get("VERIFY_UNLOCK_AMOUNT", str(VERIFY_UNLOCK_INR_AMOUNT)) or str(VERIFY_UNLOCK_INR_AMOUNT)
+)
+VERIFY_UNLOCK_CURRENCY = (os.environ.get("VERIFY_UNLOCK_CURRENCY", "INR") or "INR").strip().upper()
+VERIFY_UNLOCK_LABEL = os.environ.get("VERIFY_UNLOCK_LABEL", "$10").strip() or "$10"
+VERIFY_UNLOCK_DAYS = int(os.environ.get("VERIFY_UNLOCK_DAYS", "365") or "365")
 CERTIFICATE_API_URL = (
     os.environ.get("CERTIFICATE_API_URL")
     or os.environ.get("VITE_CERTIFICATE_API_URL")
     or "https://damnart-ai-guladab.n8n-wsk.com/webhook-test/certificate"
+).rstrip("/")
+
+
+def _default_certificate_email_webhook() -> str:
+    return "https://damnart-ai-guladab.n8n-wsk.com/webhook-test/7b3b463f-7a28-489a-aab1-f0938030e76d"
+
+
+CERTIFICATE_EMAIL_WEBHOOK_URL = (
+    os.environ.get("CERTIFICATE_EMAIL_WEBHOOK_URL")
+    or os.environ.get("N8N_CERTIFICATE_EMAIL_WEBHOOK")
+    or _default_certificate_email_webhook()
 ).rstrip("/")
 PLUMBING_COURSE_NAME = "Professional Plumbing Training Program"
 PLUMBING_TEMPLATE_FILE = "Professional plumbing tarining program.pdf"
@@ -175,7 +227,17 @@ def _load_certificates() -> dict:
 
 
 def _save_certificates(data: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     CERTIFICATES_FILE.write_text(json.dumps(data, indent=2))
+
+
+def _certificate_pdf_ready(record: dict | None) -> bool:
+    if not record:
+        return False
+    filename = str(record.get("filename") or "").strip()
+    if not filename:
+        return False
+    return (OUTPUT_DIR / Path(filename).name).is_file()
 
 
 def _find_certificate(uid: str) -> dict | None:
@@ -277,12 +339,9 @@ def _practical_video_path(uid: str) -> Path | None:
 
 
 def _pathway_videos_complete(uid: str, expected: int | None = None) -> bool:
-    steps = _training_pathway_steps()
-    need = expected if expected is not None else len(steps)
-    if need <= 0:
-        return False
-    uploaded = sum(1 for step in steps if _step_video_path(uid, step["id"]))
-    return uploaded >= need
+    """Pathway videos are optional — always complete for gating purposes."""
+    del uid, expected
+    return True
 
 
 def _student_upload_dir(progress: dict) -> Path:
@@ -294,10 +353,24 @@ def _student_upload_dir(progress: dict) -> Path:
     return UPLOADS_DIR / str(session["session_token"])
 
 
+def _certificate_download_filename(candidate_name: str = "", course_name: str = "") -> str:
+    """Safe PDF download name: CandidateName_CourseName.pdf"""
+    def _slug(value: str) -> str:
+        raw = re.sub(r"[^\w\s-]+", "", str(value or "").strip(), flags=re.UNICODE)
+        raw = re.sub(r"[\s_-]+", "_", raw).strip("_")
+        return raw[:80] or ""
+
+    name = _slug(candidate_name) or "Candidate"
+    course = _slug(course_name) or "Certificate"
+    return f"{name}_{course}.pdf"
+
+
 def _certificate_public(record: dict) -> dict:
     filename = str(record.get("filename") or "").strip()
     cert_id = str(record.get("certificateId") or record.get("uid") or "").strip()
     pdf_url = f"/generated/{filename}" if filename else str(record.get("pdfUrl") or "")
+    candidate = str(record.get("candidateName") or "").strip()
+    course = str(record.get("courseName") or "").strip()
     return {
         "success": True,
         "certificateId": cert_id,
@@ -305,14 +378,15 @@ def _certificate_public(record: dict) -> dict:
         "filename": filename,
         "pdfUrl": pdf_url,
         "downloadUrl": f"/generated/{filename}?download=1" if filename else pdf_url,
+        "downloadFilename": _certificate_download_filename(candidate, course),
         "verifyUrl": _local_verify_url(
             cert_id,
             uid=str(record.get("uid") or cert_id),
             certificate_number=str(record.get("certificateNumber") or cert_id),
         ),
         "qrUrl": f"/qr/{urllib.parse.quote(cert_id, safe='')}.png",
-        "candidateName": record.get("candidateName") or "",
-        "courseName": record.get("courseName") or "",
+        "candidateName": candidate,
+        "courseName": course,
         "grade": record.get("grade") or "Excellent",
         "certificateNumber": record.get("certificateNumber") or "",
         "issueDate": record.get("issueDate") or "",
@@ -500,24 +574,29 @@ def _apply_reviews_to_progress(progress: dict) -> list[str]:
 
 
 def _all_videos_approved(uid: str) -> bool:
-    proof = _student_video_proof(uid)
-    if not proof.get("all_videos_complete"):
+    """Only the final practical is required; optional pathway uploads must be approved if present."""
+    if not _practical_video_path(uid):
         return False
     reviews = _review_map(uid)
+    if reviews.get("practical") != "approved":
+        return False
+    proof = _student_video_proof(uid)
     for video in proof.get("videos") or []:
-        key = str(video.get("id"))
-        if reviews.get(key) != "approved":
+        if video.get("kind") == "practical":
+            continue
+        if video.get("uploaded") and reviews.get(str(video.get("id"))) != "approved":
             return False
     return True
-    """Certificate unlocks after trainer verifies all pathway + practical videos."""
-    steps_total = total_steps if total_steps is not None else len(_training_pathway_steps())
+
+
+def _certificate_wait_info(progress: dict, total_steps: int | None = None) -> dict:
+    """Pathway videos are optional. Certificate waits on practical + trainer approval."""
+    del total_steps  # kept for call-site compatibility
     uid = str(progress.get("student_uid") or "").strip()
-    videos_done = len(progress.get("completed_steps") or []) >= steps_total
+    # Week / pathway videos are optional — do not block progress.
+    videos_done = True
     if uid:
         _apply_reviews_to_progress(progress)
-        videos_done = _pathway_videos_complete(uid, steps_total) and not any(
-            _is_reupload(_review_map(uid), s["id"]) for s in _training_pathway_steps()
-        )
         reviews = _review_map(uid)
         if _practical_video_path(uid) and not _is_reupload(reviews, "practical"):
             progress["assessment_passed"] = True
@@ -541,7 +620,7 @@ def _all_videos_approved(uid: str) -> bool:
         assess_at = _now_utc()
         progress["assessment_completed_at"] = _iso(assess_at)
 
-    ready = bool(videos_done and assessment_done and trainer_verified)
+    ready = bool(assessment_done and trainer_verified)
     return {
         "certificate_ready": ready,
         "certificate_ready_at": _iso(_now_utc()) if ready else None,
@@ -549,7 +628,7 @@ def _all_videos_approved(uid: str) -> bool:
         "videos_done": videos_done,
         "assessment_done": assessment_done,
         "trainer_verified": trainer_verified,
-        "awaiting_trainer": bool(videos_done and assessment_done and not trainer_verified),
+        "awaiting_trainer": bool(assessment_done and not trainer_verified),
     }
 
 
@@ -568,6 +647,222 @@ def _public_base_url() -> str:
     except RuntimeError:
         # Fallback for non-request contexts (scripts/tests).
         return "http://127.0.0.1:5001"
+
+
+def _email_asset_base_url() -> str:
+    """Public HTTPS host for logos in emails (Gmail cannot load localhost images)."""
+    base = _public_base_url()
+    if any(h in base for h in ("127.0.0.1", "localhost", "0.0.0.0")):
+        return (
+            os.environ.get("VERIFY_PUBLIC_URL", "").rstrip("/")
+            or "https://assessment.sftlms.com"
+        )
+    return base
+
+
+def _certificate_email_image_urls() -> tuple[str, str]:
+    """
+    Public HTTPS image URLs for Gmail (localhost / missing server files fail).
+    Override with EMAIL_GSAC_LOGO_URL / EMAIL_GSAC_SEAL_URL.
+    Seal panel includes map watermark + ribbon (baked into the PNG).
+    """
+    logo = (
+        os.environ.get("EMAIL_GSAC_LOGO_URL", "").strip()
+        or "https://files.catbox.moe/n1bomy.png"
+    )
+    # Clean seal panel (map + ribbon + script once — no CSS background tiling)
+    seal = (
+        os.environ.get("EMAIL_GSAC_SEAL_URL", "").strip()
+        or "https://files.catbox.moe/n4k9ph.png"
+    )
+    return logo, seal
+
+
+def _certificate_ready_email_html(
+    *,
+    name: str,
+    uid: str,
+    number: str,
+    course: str,
+    download_url: str,
+    verify_url: str,
+) -> str:
+    sf_logo, seal = _certificate_email_image_urls()
+    brand = "Global Skill Assessment Council"
+    powered = "Sustainable Futuristic Trainings LLC"
+    website = "assessment.sftlms.com/verify"
+    website_url = "https://assessment.sftlms.com/verify"
+    support = "info@sftrainings.org"
+    # Email clients often ignore CSS background-image; use HTML background= + visible <img>.
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Your Certificate is Ready</title>
+</head>
+<body style="margin:0;padding:0;background:#e8edf2;font-family:Arial,Helvetica,sans-serif;color:#243041;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#e8edf2;padding:28px 10px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border:1px solid #d5dde6;">
+
+          <!-- HEADER (matches mockup) -->
+          <tr>
+            <td style="background:#0b3d2e;padding:18px 24px;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td valign="middle" style="width:48px;">
+                    <img src="{sf_logo}" width="42" height="42" alt="GSAC" style="display:block;border:0;" />
+                  </td>
+                  <td valign="middle" style="padding-left:10px;">
+                    <p style="margin:0;font-family:Georgia,'Times New Roman',serif;font-size:16px;line-height:1.2;color:#ffffff;font-weight:700;">
+                      {brand}
+                    </p>
+                    <p style="margin:4px 0 0;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#d7c08a;font-weight:700;">
+                      Assess&nbsp;|&nbsp;Certify&nbsp;|&nbsp;Empower
+                    </p>
+                  </td>
+                  <td valign="middle" align="right" style="width:150px;border-left:1px solid rgba(255,255,255,0.28);padding-left:14px;">
+                    <p style="margin:0;font-size:9px;line-height:1.45;letter-spacing:0.08em;text-transform:uppercase;color:#ffffff;font-weight:700;text-align:left;">
+                      An Independent<br />International<br />Certification Body
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="height:4px;background:#c5a059;font-size:0;line-height:0;">&nbsp;</td>
+          </tr>
+
+          <!-- BODY: single seal image only (no CSS bg — that caused double/tiled text) -->
+          <tr>
+            <td bgcolor="#ffffff" valign="top" style="padding:0;background-color:#ffffff;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td valign="top" style="padding:28px 16px 16px 28px;">
+                    <p style="margin:0;font-size:15px;color:#334155;font-weight:700;">Dear {name},</p>
+                    <h1 style="margin:14px 0 0;font-family:Georgia,'Times New Roman',serif;font-size:28px;line-height:1.2;color:#0b3d2e;font-weight:700;">
+                      Your Certificate Has<br />Been Issued
+                    </h1>
+                    <div style="width:56px;height:3px;background:#c5a059;margin:12px 0 16px;font-size:0;line-height:0;">&nbsp;</div>
+                    <p style="margin:0;font-size:14px;line-height:1.7;color:#475569;">
+                      We are pleased to inform you that you have successfully completed the programme requirements
+                      and your official certificate has been issued by the <strong style="color:#0b3d2e;">{brand}</strong>.
+                    </p>
+                    <p style="margin:12px 0 0;font-size:14px;line-height:1.7;color:#475569;">
+                      This certificate recognises the knowledge and skill you have demonstrated through the assessment process.
+                    </p>
+                    <p style="margin:12px 0 0;font-size:14px;line-height:1.7;color:#475569;">
+                      You can now download your certificate and verify its authenticity using the secure links below.
+                    </p>
+                  </td>
+                  <td valign="top" align="center" width="250" style="padding:18px 18px 12px 4px;width:250px;">
+                    <img src="{seal}" width="230" alt="Certified for a Brighter Tomorrow" style="display:block;border:0;outline:none;text-decoration:none;width:230px;max-width:100%;height:auto;" />
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- BUTTONS -->
+          <tr>
+            <td style="padding:18px 28px 10px;background:#ffffff;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td align="left" style="padding:0 6px 8px 0;">
+                    <a href="{download_url}" style="display:inline-block;background:#0b3d2e;color:#ffffff;text-decoration:none;font-size:13px;font-weight:700;padding:13px 16px;border-radius:8px;">
+                      ↓ Download Your Certificate (PDF) ›
+                    </a>
+                  </td>
+                  <td align="left" style="padding:0 0 8px 6px;">
+                    <a href="{verify_url}" style="display:inline-block;background:#ffffff;color:#0b3d2e;text-decoration:none;font-size:13px;font-weight:700;padding:12px 16px;border-radius:8px;border:1.5px solid #0b3d2e;">
+                      ✓ Verify Certificate Authenticity ›
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- AUTHENTICITY -->
+          <tr>
+            <td style="padding:6px 28px 18px;background:#ffffff;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#eef5f8;border:1px solid #d0dde6;border-radius:10px;">
+                <tr>
+                  <td style="width:42px;padding:14px 0 14px 14px;vertical-align:top;font-size:22px;color:#0b3d2e;">✓</td>
+                  <td style="padding:14px 16px 14px 6px;font-size:12px;line-height:1.6;color:#475569;">
+                    <strong style="color:#0b3d2e;font-size:13px;">Authenticity Guaranteed</strong><br />
+                    This certificate is issued digitally and can be verified at any time through our official verification portal.
+                    Please do not forward altered copies.
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- CLOSING -->
+          <tr>
+            <td style="padding:4px 28px 20px;font-size:14px;line-height:1.7;color:#475569;background:#ffffff;">
+              We congratulate you on this achievement and wish you continued success in your professional journey.
+              <br /><br />
+              With best regards,<br />
+              <span style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:18px;color:#0b3d2e;">Certification Office</span><br />
+              <strong style="color:#0b3d2e;">{brand}</strong>
+            </td>
+          </tr>
+
+          <!-- TRUST ROW -->
+          <tr>
+            <td style="padding:0 18px 22px;background:#ffffff;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-top:1px solid #e5eaf0;border-bottom:1px solid #e5eaf0;">
+                <tr>
+                  <td align="center" style="padding:14px 4px;width:25%;font-size:10px;letter-spacing:0.04em;text-transform:uppercase;color:#64748b;font-weight:700;line-height:1.35;">
+                    International<br />Recognition
+                  </td>
+                  <td align="center" style="padding:14px 4px;width:25%;border-left:1px solid #e5eaf0;font-size:10px;letter-spacing:0.04em;text-transform:uppercase;color:#64748b;font-weight:700;line-height:1.35;">
+                    Trusted<br />Certification
+                  </td>
+                  <td align="center" style="padding:14px 4px;width:25%;border-left:1px solid #e5eaf0;font-size:10px;letter-spacing:0.04em;text-transform:uppercase;color:#64748b;font-weight:700;line-height:1.35;">
+                    Credible<br />Assessment
+                  </td>
+                  <td align="center" style="padding:14px 4px;width:25%;border-left:1px solid #e5eaf0;font-size:10px;letter-spacing:0.04em;text-transform:uppercase;color:#64748b;font-weight:700;line-height:1.35;">
+                    Global<br />Opportunities
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- FOOTER -->
+          <tr>
+            <td style="background:#0b3d2e;padding:18px 24px;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td valign="middle" style="font-size:12px;line-height:1.55;color:#e5e7eb;">
+                    <strong style="color:#ffffff;">{brand}</strong><br />
+                    <a href="{website_url}" style="color:#d7c08a;text-decoration:underline;">{website}</a> · {support}
+                  </td>
+                  <td valign="middle" align="right" style="font-family:Georgia,'Times New Roman',serif;font-style:italic;font-size:13px;color:#d7c08a;">
+                    Trusted Skill.<br />Brighter Futures.
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#f1f5f9;padding:12px 20px;text-align:center;font-size:11px;line-height:1.5;color:#64748b;">
+              This is an official email from {brand}. Please retain this email for your records.<br />
+              Powered by {powered}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
 
 
 def _to_dd_mm_yyyy(value) -> str:
@@ -598,6 +893,24 @@ def _training_duration_months(start, end) -> str:
     if end_d.day < start_d.day:
         months -= 1
     return str(max(1, months))
+
+
+def _training_period_complete(student: dict) -> tuple[bool, str]:
+    """Grade/certificate unlock only on or after the student's batch end date."""
+    end_raw = str((student or {}).get("batch_end") or "").strip()[:10]
+    if len(end_raw) < 8:
+        return False, "Set the training batch end date first. Grade unlocks after the training period ends."
+    try:
+        end_d = datetime.strptime(end_raw, "%Y-%m-%d").date()
+    except ValueError:
+        return False, "Invalid batch end date. Fix the training dates, then try again."
+    if date.today() < end_d:
+        return (
+            False,
+            f"Grade selection unlocks after the training period ends on {_to_dd_mm_yyyy(end_raw)}. "
+            "Videos can still be uploaded during training.",
+        )
+    return True, ""
 
 
 def _add_months(start_d: date, months: int) -> date:
@@ -1194,18 +1507,29 @@ def lms_certificates_verify():
 
     cert_no = str(issued.get("certificateNumber") or student.get("certificate_number") or number)
     base = _public_base_url()
-    pdf_path = f"/api/certificates/public-pdf?number={urllib.parse.quote(cert_no)}&download=1"
-    pdf_url = f"{base}{pdf_path}" if pack.get("pdfUrl") or pack.get("downloadUrl") else None
+    access_token = str(request.args.get("access") or request.args.get("token") or "").strip()
+    paid = bool(access_token and get_valid_video_access(access_token, student["uid"]))
+    pdf_ready = bool(pack.get("pdfUrl") or pack.get("downloadUrl"))
+    pdf_path = (
+        f"/api/certificates/public-pdf?number={urllib.parse.quote(cert_no)}"
+        f"&download=1&access={urllib.parse.quote(access_token)}"
+        if paid and pdf_ready
+        else None
+    )
+    pdf_url = f"{base}{pdf_path}" if pdf_path else None
 
     videos = []
-    for item in pack.get("videos") or []:
-        row = dict(item)
-        image_url = str(row.get("image") or "")
-        if image_url.startswith("/"):
-            row["image"] = f"{base}{image_url}"
-        row["videoUrl"] = None
-        row["locked"] = True
-        videos.append(row)
+    if paid:
+        videos = _videos_with_access_token(student["uid"], access_token)
+    else:
+        for item in pack.get("videos") or []:
+            row = dict(item)
+            image_url = str(row.get("image") or "")
+            if image_url.startswith("/"):
+                row["image"] = f"{base}{image_url}"
+            row["videoUrl"] = None
+            row["locked"] = True
+            videos.append(row)
 
     body = {
         "ok": True,
@@ -1218,10 +1542,30 @@ def lms_certificates_verify():
             "scorePercent": 100 if pack.get("assessmentPassed") else None,
             "holderType": "individual",
             "companyName": None,
-            "pdfReady": bool(pdf_url),
+            "pdfReady": pdf_ready,
             "pdfUrl": pdf_url,
             "delegateNumber": student.get("uid"),
             "email": student.get("email"),
+            "grade": issued.get("grade") or student.get("trainer_grade") or "Excellent",
+        },
+        "unlock": {
+            "required": not paid,
+            "unlocked": paid,
+            "label": VERIFY_UNLOCK_LABEL,
+            "razorpayKeyId": RAZORPAY_KEY_ID or None,
+            "configured": bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET),
+            "amount": VERIFY_UNLOCK_AMOUNT if VERIFY_UNLOCK_CURRENCY == "INR" else VERIFY_UNLOCK_USD_AMOUNT,
+            "currency": VERIFY_UNLOCK_CURRENCY if VERIFY_UNLOCK_CURRENCY in {"INR", "USD"} else "INR",
+            "options": [
+                {
+                    "region": "global",
+                    "currency": VERIFY_UNLOCK_CURRENCY if VERIFY_UNLOCK_CURRENCY in {"INR", "USD"} else "INR",
+                    "amount": VERIFY_UNLOCK_AMOUNT if VERIFY_UNLOCK_CURRENCY == "INR" else VERIFY_UNLOCK_USD_AMOUNT,
+                    "label": VERIFY_UNLOCK_LABEL,
+                    "title": "Pay",
+                    "methods": "UPI, cards, netbanking, wallets (India & international)",
+                },
+            ],
         },
         "proofs": {
             "videos": videos,
@@ -1236,6 +1580,585 @@ def lms_certificates_verify():
         "source": "app_database",
     }
     return _cors_verify(jsonify(body))
+
+
+def _post_n8n_webhook(url: str, payload: dict) -> tuple[bool, str]:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45, context=_ssl_context()) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            status = getattr(resp, "status", 200)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(detail)
+            message = parsed.get("error") or parsed.get("message") or detail
+        except json.JSONDecodeError:
+            message = detail or str(exc)
+        return False, f"n8n webhook HTTP {exc.code}: {message}"
+    except urllib.error.URLError as exc:
+        return False, f"n8n webhook unreachable: {exc.reason}"
+    except Exception as exc:
+        return False, str(exc)
+    if status >= 400:
+        return False, raw or f"n8n webhook HTTP {status}"
+    return True, "Queued in n8n"
+
+
+def _send_email(
+    to_addr: str,
+    subject: str,
+    body: str,
+    *,
+    html: str = "",
+    log_tag: str = "email",
+    allow_log_only: bool = True,
+) -> tuple[bool, str]:
+    to_addr = str(to_addr or "").strip().lower()
+    if not to_addr or "@" not in to_addr:
+        return False, "A valid recipient email is required."
+    smtp_host = os.environ.get("SMTP_HOST", "").strip()
+    smtp_port = int(os.environ.get("SMTP_PORT", "587") or "587")
+    smtp_user = os.environ.get("SMTP_USER", "").strip()
+    smtp_pass = os.environ.get("SMTP_PASSWORD", "").strip()
+    from_addr = os.environ.get("SMTP_FROM", smtp_user or VIDEO_ACCESS_NOTIFY_EMAIL).strip()
+    if not smtp_host:
+        print(f"[{log_tag}] Notify {to_addr}: {subject}\n{body}", flush=True)
+        if allow_log_only:
+            return True, f"SMTP not configured. Email logged for {to_addr}."
+        return False, "SMTP backup is not configured."
+    try:
+        if html:
+            msg: MIMEText | MIMEMultipart = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = from_addr
+            msg["To"] = to_addr
+            msg.attach(MIMEText(body, "plain", "utf-8"))
+            msg.attach(MIMEText(html, "html", "utf-8"))
+        else:
+            msg = MIMEText(body, "plain", "utf-8")
+            msg["Subject"] = subject
+            msg["From"] = from_addr
+            msg["To"] = to_addr
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as smtp:
+            if os.environ.get("SMTP_TLS", "1").strip().lower() not in {"0", "false", "no"}:
+                smtp.starttls(context=ssl.create_default_context())
+            if smtp_user and smtp_pass:
+                smtp.login(smtp_user, smtp_pass)
+            smtp.sendmail(from_addr, [to_addr], msg.as_string())
+        return True, f"Email sent to {to_addr} via SMTP"
+    except Exception as exc:
+        print(f"[{log_tag}] SMTP to {to_addr} failed: {exc}", flush=True)
+        return False, str(exc)
+
+
+def _deliver_email(
+    to_addr: str,
+    subject: str,
+    body: str,
+    *,
+    html: str = "",
+    extra: dict | None = None,
+    log_tag: str = "email",
+) -> tuple[bool, str]:
+    """Send via n8n first; fall back to SMTP only if n8n fails."""
+    to_addr = str(to_addr or "").strip().lower()
+    if not to_addr or "@" not in to_addr:
+        return False, "A valid recipient email is required."
+    html_body = html or body.replace("\n", "<br>\n")
+    # Include every common alias n8n Gmail / Email nodes map to.
+    payload = {
+        "action": log_tag,
+        "sendEmail": True,
+        "to": to_addr,
+        "email": to_addr,
+        "learnerEmail": to_addr,
+        "recipient": to_addr,
+        "recipientEmail": to_addr,
+        "toEmail": to_addr,
+        "mailTo": to_addr,
+        "sendTo": to_addr,
+        "subject": subject,
+        "body": body,
+        "text": body,
+        "textBody": body,
+        "html": html_body,
+        "htmlBody": html_body,
+        "message": html_body,
+        "content": html_body,
+        "instituteName": INSTITUTE_NAME,
+        **(extra or {}),
+    }
+    # Keep learnerEmail as the real inbox even if extra tried to blank branding fields.
+    payload["learnerEmail"] = to_addr
+    payload["to"] = to_addr
+    payload["email"] = to_addr
+    if CERTIFICATE_EMAIL_WEBHOOK_URL:
+        ok, detail = _post_n8n_webhook(CERTIFICATE_EMAIL_WEBHOOK_URL, payload)
+        if ok:
+            # n8n often returns "Workflow was started" before Gmail finishes.
+            # Also try SMTP when configured so the inbox is not dependent on n8n Gmail mapping.
+            smtp_host = os.environ.get("SMTP_HOST", "").strip()
+            if smtp_host:
+                smtp_ok, smtp_detail = _send_email(
+                    to_addr,
+                    subject,
+                    body,
+                    html=html_body,
+                    log_tag=log_tag,
+                    allow_log_only=False,
+                )
+                if smtp_ok:
+                    return True, f"Queued in n8n and sent via SMTP to {to_addr}."
+                return True, f"Queued in n8n for {to_addr}. SMTP backup failed: {smtp_detail}"
+            return True, f"Queued in n8n for {to_addr}. Check n8n Executions if inbox is empty."
+        print(f"[{log_tag}] n8n failed, trying SMTP backup: {detail}", flush=True)
+        hint = ""
+        low = str(detail).lower()
+        if "not registered" in low or "404" in low:
+            hint = (
+                " Open your n8n workflow and turn the top-right Active toggle ON "
+                "(use Production webhook URL /webhook/…, not webhook-test)."
+            )
+        smtp_ok, smtp_detail = _send_email(
+            to_addr,
+            subject,
+            body,
+            html=html_body,
+            log_tag=log_tag,
+            allow_log_only=False,
+        )
+        if smtp_ok:
+            return True, f"n8n failed; sent via SMTP backup. {smtp_detail}"
+        return False, f"Email not sent.{hint} n8n: {detail}. SMTP: {smtp_detail}"
+    return _send_email(
+        to_addr, subject, body, html=html_body, log_tag=log_tag, allow_log_only=True
+    )
+
+
+def _send_video_access_notification(saved: dict, student: dict) -> None:
+    to_addr = VIDEO_ACCESS_NOTIFY_EMAIL
+    student_name = str(student.get("name") or saved.get("uid") or "").strip()
+    verify_link = (
+        f"{_public_base_url()}/verify?"
+        f"{urllib.parse.urlencode({'uid': saved.get('uid', ''), 'number': saved.get('certificate_number', '')})}"
+    )
+    subject = f"Video access request — {saved.get('visitor_name', 'Visitor')} ({student_name})"
+    body = (
+        f"A visitor requested access to training videos on the verify website.\n\n"
+        f"Student: {student_name} ({saved.get('uid')})\n"
+        f"Certificate: {saved.get('certificate_number')}\n"
+        f"Visitor: {saved.get('visitor_name')}\n"
+        f"Organisation: {saved.get('organisation')}\n"
+        f"Email: {saved.get('email')}\n"
+        f"Location: {saved.get('location')}\n"
+        f"Request ID: {saved.get('id')}\n\n"
+        f"Open the institute app → Students → Video access requests → Approve.\n"
+        f"Verify page: {verify_link}\n"
+    )
+    ok, detail = _deliver_email(
+        to_addr,
+        subject,
+        body,
+        extra={
+            "action": "video-access",
+            "visitorName": saved.get("visitor_name"),
+            "organisation": saved.get("organisation"),
+            "location": saved.get("location"),
+            "uid": saved.get("uid"),
+            "certificateNumber": saved.get("certificate_number"),
+            "verifyUrl": verify_link,
+            "requestId": saved.get("id"),
+            "studentName": student_name,
+        },
+        log_tag="video-access",
+    )
+    if not ok:
+        print(f"[video-access] Email to {to_addr} failed: {detail}", flush=True)
+
+
+def _send_certificate_download_email(student: dict, *, to_email: str | None = None) -> tuple[bool, str]:
+    email = str(to_email or student.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        return False, "Add the student's registered email first, then try again."
+    uid = str(student.get("uid") or "").strip()
+    number = str(student.get("certificate_number") or "").strip()
+    if not number:
+        return False, "Generate the certificate first, then email the download link."
+    existing = _find_certificate(uid)
+    filename = str((existing or {}).get("filename") or "").strip()
+    if not filename or not (OUTPUT_DIR / Path(filename).name).is_file():
+        return False, "Certificate PDF is missing. Generate the certificate again first."
+
+    # Email links must be a public HTTPS host (not localhost) and must hit the PDF API,
+    # never the SPA home page. Include a signed email token so student email download
+    # stays free while verify-website downloads require paid unlock.
+    link_base = _email_asset_base_url()
+    email_token = _make_email_download_token(number)
+    download_url = (
+        f"{link_base}/api/certificates/public-pdf?"
+        f"{urllib.parse.urlencode({'number': number, 'download': '1', 'et': email_token})}"
+    )
+    verify_url = f"{link_base}/verify?{urllib.parse.urlencode({'uid': uid, 'number': number})}"
+    name = str(student.get("name") or uid).strip()
+    course = str(student.get("course_name") or "Training Course").strip()
+    subject = "Your Certificate is Ready"
+    body = (
+        f"Dear {name},\n\n"
+        f"We are pleased to inform you that you have successfully completed the programme requirements "
+        f"and your official certificate has been issued by the Global Skill Assessment Council.\n\n"
+        f"Download Your Certificate (PDF):\n{download_url}\n\n"
+        f"Verify Certificate Authenticity:\n{verify_url}\n\n"
+        f"We congratulate you on this achievement and wish you continued success in your professional journey.\n\n"
+        f"With best regards,\n"
+        f"Certification Office\n"
+        f"Global Skill Assessment Council\n"
+    )
+    logo_url, seal_url = _certificate_email_image_urls()
+    html = _certificate_ready_email_html(
+        name=name,
+        uid=uid,
+        number=number,
+        course=course,
+        download_url=download_url,
+        verify_url=verify_url,
+    )
+    n8n_payload = {
+        "action": "send_certificate_email",
+        "learnerEmail": email,
+        "downloadUrl": download_url,
+        "pdfUrl": download_url,
+        "verifyUrl": verify_url,
+        "logoUrl": logo_url,
+        "sealUrl": seal_url,
+        "brandName": "Global Skill Assessment Council",
+        "poweredBy": "Sustainable Futuristic Trainings LLC",
+        # Do not send institute branding or candidate / course fields to n8n.
+        "instituteName": "",
+        "instituteLogoUrl": "",
+        "candidateName": "",
+        "uid": "",
+        "certificateNumber": "",
+        "courseName": "",
+        "html": html,
+        "subject": subject,
+        "text": body,
+    }
+    return _deliver_email(
+        email,
+        subject,
+        body,
+        html=html,
+        extra=n8n_payload,
+        log_tag="certificate-email",
+    )
+
+
+def _videos_with_access_token(uid: str, token: str) -> list[dict]:
+    pack = _verify_lookup(uid)
+    base = _public_base_url()
+    videos = []
+    for item in pack.get("videos") or []:
+        row = dict(item)
+        video_url = str(row.get("videoUrl") or "")
+        image_url = str(row.get("image") or "")
+        if video_url.startswith("/"):
+            video_url = f"{base}{video_url}"
+        if video_url:
+            sep = "&" if "?" in video_url else "?"
+            row["videoUrl"] = f"{video_url}{sep}access={urllib.parse.quote(token)}"
+        else:
+            row["videoUrl"] = None
+        if image_url.startswith("/"):
+            row["image"] = f"{base}{image_url}"
+        row["locked"] = False
+        videos.append(row)
+    return videos
+
+
+def _razorpay_configured() -> bool:
+    return bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET)
+
+
+def _make_email_download_token(number: str, days: int = 365) -> str:
+    exp = int(time.time()) + max(1, int(days)) * 86400
+    payload = f"{str(number or '').strip()}|{exp}"
+    sig = hmac.new(
+        str(app.secret_key).encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:40]
+    return f"{exp}.{sig}"
+
+
+def _valid_email_download_token(number: str, token: str) -> bool:
+    token = str(token or "").strip()
+    number = str(number or "").strip()
+    if not token or not number or "." not in token:
+        return False
+    exp_s, _, sig = token.partition(".")
+    try:
+        exp = int(exp_s)
+    except ValueError:
+        return False
+    if exp < int(time.time()):
+        return False
+    payload = f"{number}|{exp}"
+    expected = hmac.new(
+        str(app.secret_key).encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:40]
+    return hmac.compare_digest(sig, expected)
+
+
+def _can_download_public_pdf(student: dict) -> bool:
+    if session.get("is_admin"):
+        return True
+    number = str(student.get("certificate_number") or request.args.get("number") or "").strip()
+    et = str(request.args.get("et") or "").strip()
+    if et and _valid_email_download_token(number, et):
+        return True
+    access = str(request.args.get("access") or request.args.get("token") or "").strip()
+    uid = str(student.get("uid") or "").strip()
+    return bool(access and get_valid_video_access(access, uid))
+
+
+def _razorpay_request(method: str, path: str, payload: dict | None = None) -> tuple[bool, dict | str]:
+    if not _razorpay_configured():
+        return False, "Razorpay is not configured."
+    url = f"https://api.razorpay.com/v1/{path.lstrip('/')}"
+    auth = base64.b64encode(f"{RAZORPAY_KEY_ID}:{RAZORPAY_KEY_SECRET}".encode("utf-8")).decode("ascii")
+    data = None
+    headers = {
+        "Authorization": f"Basic {auth}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(req, timeout=45, context=_ssl_context()) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(detail)
+            err = parsed.get("error")
+            if isinstance(err, dict):
+                message = err.get("description") or err.get("code") or detail
+            else:
+                message = err or parsed.get("message") or detail
+        except json.JSONDecodeError:
+            message = detail or str(exc)
+        return False, f"Razorpay HTTP {exc.code}: {message}"
+    except Exception as exc:
+        return False, str(exc)
+    try:
+        return True, json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return False, raw or "Invalid Razorpay response"
+
+
+def _verify_razorpay_signature(order_id: str, payment_id: str, signature: str) -> bool:
+    payload = f"{order_id}|{payment_id}".encode("utf-8")
+    expected = hmac.new(
+        RAZORPAY_KEY_SECRET.encode("utf-8"),
+        payload,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, str(signature or "").strip())
+
+
+def _unlock_payload_for_token(uid: str, token: str, cert_no: str) -> dict:
+    base = _public_base_url()
+    pdf_url = (
+        f"{base}/api/certificates/public-pdf?"
+        f"{urllib.parse.urlencode({'number': cert_no, 'download': '1', 'access': token})}"
+    )
+    return {
+        "token": token,
+        "videos": _videos_with_access_token(uid, token),
+        "pdfUrl": pdf_url,
+        "downloadUrl": pdf_url,
+    }
+
+
+def _unlock_region_pricing(region: str | None = None, currency: str | None = None) -> dict:
+    """Single $10 unlock for everyone. Charge INR so Indian + international cards / UPI work."""
+    _ = region, currency  # kept for API compatibility; one pricing for all
+    return {
+        "region": "global",
+        "amount": VERIFY_UNLOCK_AMOUNT if VERIFY_UNLOCK_CURRENCY == "INR" else VERIFY_UNLOCK_USD_AMOUNT,
+        "currency": VERIFY_UNLOCK_CURRENCY if VERIFY_UNLOCK_CURRENCY in {"INR", "USD"} else "INR",
+        "label": VERIFY_UNLOCK_LABEL,
+        "methods_hint": "upi,card,netbanking,wallet",
+    }
+
+
+@app.route("/api/certificates/verify/unlock/order", methods=["POST", "OPTIONS"])
+def lms_certificates_unlock_order():
+    if request.method == "OPTIONS":
+        return _cors_verify(app.make_response(("", 204)))
+    if not _razorpay_configured():
+        return _cors_verify(
+            jsonify(
+                {
+                    "ok": False,
+                    "message": "Razorpay is not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.",
+                }
+            )
+        ), 503
+
+    payload = request.get_json(silent=True) or {}
+    uid = str(payload.get("uid") or "").strip()
+    number = str(payload.get("number") or payload.get("certificateNumber") or "").strip()
+    email = str(payload.get("email") or "").strip().lower()
+    pricing = _unlock_region_pricing(
+        region=str(payload.get("region") or ""),
+        currency=str(payload.get("currency") or ""),
+    )
+    if not uid or not number:
+        return _cors_verify(jsonify({"ok": False, "message": "UID and certificate number are required."})), 400
+
+    student = get_student_by_uid_and_certificate(uid, number)
+    if not student:
+        return _cors_verify(jsonify({"ok": False, "message": "Certificate record not found."})), 404
+
+    receipt = f"vu_{pricing['region'][:3]}_{student['uid']}_{int(time.time())}"[:40]
+    ok, order = _razorpay_request(
+        "POST",
+        "orders",
+        {
+            "amount": pricing["amount"],
+            "currency": pricing["currency"],
+            "receipt": receipt,
+            "notes": {
+                "uid": student["uid"],
+                "certificate_number": str(student.get("certificate_number") or number),
+                "purpose": "verify_unlock",
+                "region": pricing["region"],
+            },
+        },
+    )
+    if not ok or not isinstance(order, dict):
+        return _cors_verify(jsonify({"ok": False, "message": str(order)})), 502
+
+    order_id = str(order.get("id") or "").strip()
+    if not order_id:
+        return _cors_verify(jsonify({"ok": False, "message": "Razorpay did not return an order id."})), 502
+
+    create_verify_unlock_payment(
+        order_id=order_id,
+        uid=student["uid"],
+        certificate_number=str(student.get("certificate_number") or number),
+        email=email or str(student.get("email") or ""),
+        amount=int(pricing["amount"]),
+        currency=str(pricing["currency"]),
+    )
+    return _cors_verify(
+        jsonify(
+            {
+                "ok": True,
+                "keyId": RAZORPAY_KEY_ID,
+                "orderId": order_id,
+                "amount": pricing["amount"],
+                "currency": pricing["currency"],
+                "label": pricing["label"],
+                "region": pricing["region"],
+                "name": "Global Skill Assessment Council",
+                "description": (
+                    f"Unlock certificate download + training videos ({pricing['label']})"
+                ),
+                "prefill": {
+                    "email": email or str(student.get("email") or ""),
+                    "name": str(student.get("name") or ""),
+                    "contact": str(student.get("phone") or ""),
+                },
+            }
+        )
+    )
+
+
+@app.route("/api/certificates/verify/unlock/confirm", methods=["POST", "OPTIONS"])
+def lms_certificates_unlock_confirm():
+    if request.method == "OPTIONS":
+        return _cors_verify(app.make_response(("", 204)))
+    if not _razorpay_configured():
+        return _cors_verify(jsonify({"ok": False, "message": "Razorpay is not configured."})), 503
+
+    payload = request.get_json(silent=True) or {}
+    order_id = str(payload.get("razorpay_order_id") or payload.get("orderId") or "").strip()
+    payment_id = str(payload.get("razorpay_payment_id") or payload.get("paymentId") or "").strip()
+    signature = str(payload.get("razorpay_signature") or payload.get("signature") or "").strip()
+    uid = str(payload.get("uid") or "").strip()
+    number = str(payload.get("number") or payload.get("certificateNumber") or "").strip()
+    email = str(payload.get("email") or "").strip().lower()
+
+    if not order_id or not payment_id or not signature:
+        return _cors_verify(jsonify({"ok": False, "message": "Payment details are incomplete."})), 400
+    if not uid or not number:
+        return _cors_verify(jsonify({"ok": False, "message": "UID and certificate number are required."})), 400
+    if not _verify_razorpay_signature(order_id, payment_id, signature):
+        return _cors_verify(jsonify({"ok": False, "message": "Invalid payment signature."})), 400
+
+    student = get_student_by_uid_and_certificate(uid, number)
+    if not student:
+        return _cors_verify(jsonify({"ok": False, "message": "Certificate record not found."})), 404
+
+    existing = get_verify_unlock_payment_by_order(order_id)
+    if existing and str(existing.get("status") or "") == "paid" and existing.get("access_token"):
+        token = str(existing["access_token"])
+        if get_valid_video_access(token, student["uid"]):
+            unlock = _unlock_payload_for_token(
+                student["uid"],
+                token,
+                str(student.get("certificate_number") or number),
+            )
+            return _cors_verify(
+                jsonify(
+                    {
+                        "ok": True,
+                        "unlocked": True,
+                        "message": "Already unlocked. Certificate download and videos are available.",
+                        **unlock,
+                    }
+                )
+            )
+
+    if existing and str(existing.get("uid") or "").lower() != str(student["uid"]).lower():
+        return _cors_verify(jsonify({"ok": False, "message": "Payment order does not match this certificate."})), 400
+
+    token = secrets.token_urlsafe(32)
+    grant_paid_verify_unlock(
+        uid=student["uid"],
+        certificate_number=str(student.get("certificate_number") or number),
+        email=email or str(student.get("email") or ""),
+        token=token,
+        days=VERIFY_UNLOCK_DAYS,
+    )
+    mark_verify_unlock_paid(order_id=order_id, payment_id=payment_id, access_token=token)
+    unlock = _unlock_payload_for_token(
+        student["uid"],
+        token,
+        str(student.get("certificate_number") or number),
+    )
+    return _cors_verify(
+        jsonify(
+            {
+                "ok": True,
+                "unlocked": True,
+                "message": "Payment successful. Certificate download and training videos are unlocked.",
+                **unlock,
+            }
+        )
+    )
 
 
 @app.route("/api/certificates/verify/video-access", methods=["POST", "OPTIONS"])
@@ -1274,31 +2197,14 @@ def lms_certificates_video_access():
         location=location,
         token=token,
     )
-    pack = _verify_lookup(student["uid"])
-    base = _public_base_url()
-    videos = []
-    for item in pack.get("videos") or []:
-        row = dict(item)
-        video_url = str(row.get("videoUrl") or "")
-        image_url = str(row.get("image") or "")
-        if video_url.startswith("/"):
-            video_url = f"{base}{video_url}"
-        if video_url:
-            sep = "&" if "?" in video_url else "?"
-            row["videoUrl"] = f"{video_url}{sep}access={urllib.parse.quote(token)}"
-        else:
-            row["videoUrl"] = None
-        if image_url.startswith("/"):
-            row["image"] = f"{base}{image_url}"
-        row["locked"] = False
-        videos.append(row)
+    _send_video_access_notification(saved, student)
 
     return _cors_verify(
         jsonify(
             {
                 "ok": True,
+                "pending": True,
                 "saved": True,
-                "token": token,
                 "request": {
                     "id": saved.get("id"),
                     "uid": saved.get("uid"),
@@ -1307,13 +2213,60 @@ def lms_certificates_video_access():
                     "organisation": saved.get("organisation"),
                     "email": saved.get("email"),
                     "location": saved.get("location"),
+                    "status": saved.get("status") or "pending",
                     "createdAt": saved.get("created_at"),
                 },
-                "videos": videos,
-                "message": "Details saved. You can now watch the training videos.",
+                "message": (
+                    f"Request sent to {VIDEO_ACCESS_NOTIFY_EMAIL}. "
+                    "Training videos will unlock after institute approval."
+                ),
             }
         )
     )
+
+
+@app.route("/api/certificates/verify/video-access/status", methods=["POST", "OPTIONS"])
+def lms_certificates_video_access_status():
+    if request.method == "OPTIONS":
+        return _cors_verify(app.make_response(("", 204)))
+
+    payload = request.get_json(silent=True) or {}
+    uid = str(payload.get("uid") or "").strip()
+    email = str(payload.get("email") or "").strip().lower()
+    if not uid or not email:
+        return _cors_verify(jsonify({"ok": False, "message": "UID and email are required."})), 400
+
+    record = get_latest_video_access_for_visitor(uid, email)
+    if not record:
+        return _cors_verify(jsonify({"ok": True, "status": "none", "message": "No access request found."}))
+
+    status = str(record.get("status") or "pending").strip().lower()
+    body: dict = {
+        "ok": True,
+        "status": status,
+        "request": {
+            "id": record.get("id"),
+            "uid": record.get("uid"),
+            "email": record.get("email"),
+            "status": status,
+            "createdAt": record.get("created_at"),
+            "approvedAt": record.get("approved_at"),
+        },
+    }
+    if status == "approved":
+        token = str(record.get("token") or "").strip()
+        if get_valid_video_access(token, uid):
+            body["token"] = token
+            body["videos"] = _videos_with_access_token(uid, token)
+            body["message"] = "Access approved. You can watch the training videos."
+        else:
+            body["status"] = "expired"
+            body["message"] = "Access expired. Submit a new request."
+    elif status == "pending":
+        body["message"] = f"Waiting for approval at {VIDEO_ACCESS_NOTIFY_EMAIL}."
+    elif status == "rejected":
+        body["message"] = "This request was not approved."
+    return _cors_verify(jsonify(body))
 
 
 @app.route("/api/certificates/public-pdf", methods=["GET"])
@@ -1322,6 +2275,16 @@ def lms_public_pdf():
     student = get_student_by_certificate(number) or get_student_by_uid(number)
     if not student:
         abort(404)
+    if not _can_download_public_pdf(student):
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "message": f"Pay {VERIFY_UNLOCK_LABEL} on the verify page to download this certificate.",
+                }
+            ),
+            402,
+        )
     pack = _verify_lookup(student["uid"])
     filename = str((pack.get("cert") or {}).get("filename") or "")
     existing = _find_certificate(student["uid"])
@@ -1329,12 +2292,17 @@ def lms_public_pdf():
     if not filename or not (OUTPUT_DIR / filename).is_file():
         abort(404)
     as_attachment = str(request.args.get("download") or "").lower() in ("1", "true", "yes")
+    cert = existing or pack.get("cert") or {}
+    download_name = _certificate_download_filename(
+        str(cert.get("candidateName") or student.get("name") or ""),
+        str(cert.get("courseName") or student.get("course_name") or ""),
+    )
     return send_from_directory(
         OUTPUT_DIR,
         filename,
         mimetype="application/pdf",
         as_attachment=as_attachment,
-        download_name="SFT-certificate.pdf",
+        download_name=download_name,
     )
 
 
@@ -1401,10 +2369,9 @@ def get_progress():
 
     phase = "registration"
     if progress.get("candidate_name"):
-        if completed < total_steps:
+        # Pathway weeks are optional; practical assessment is the required last step.
+        if not assessment_done:
             phase = "training"
-        elif not assessment_done:
-            phase = "assessment"
         else:
             phase = "certificate"
 
@@ -1581,18 +2548,10 @@ def upload_step_video(step_id: int):
     reviews = _review_map(uid) if uid else {}
     redo = _is_reupload(reviews, step_id)
     completed_training = [i for i in (progress.get("completed_steps") or []) if i in training_ids]
-    expected_next = None
-    for s in _training_pathway_steps():
-        if s["id"] not in completed_training:
-            expected_next = s["id"]
-            break
+    # Pathway videos are optional — any week can be uploaded in any order.
     if redo:
         pass
-    elif expected_next is not None and step_id != expected_next:
-        if step_id in completed_training:
-            return jsonify({"success": True, "message": "Step already completed.", "progress": progress})
-        return jsonify({"success": False, "error": "Complete previous steps first."}), 400
-    elif expected_next is None:
+    elif step_id in completed_training:
         return jsonify({"success": True, "message": "Step already completed.", "progress": progress})
 
     if "video" not in request.files:
@@ -1689,10 +2648,6 @@ def upload_practical_video():
     uid = str(progress.get("student_uid") or "").strip()
     if not uid:
         return jsonify({"success": False, "error": "Log in with your UID first."}), 400
-    if len([i for i in (progress.get("completed_steps") or []) if i in {s["id"] for s in _training_pathway_steps()}]) < len(
-        _training_pathway_steps()
-    ) and not _pathway_videos_complete(uid):
-        return jsonify({"success": False, "error": "Complete all training videos first."}), 400
 
     if "video" not in request.files:
         return jsonify({"success": False, "error": "No video file uploaded."}), 400
@@ -1822,13 +2777,15 @@ def submit_assessment():
 
 def _issue_certificate_for_student(student: dict, grade: str = "Excellent") -> dict:
     uid = str(student.get("uid") or "").strip()
-    _delete_issued_certificate(uid)
+    previous = _find_certificate(uid)
+    old_filename = str((previous or {}).get("filename") or "").strip()
     student = get_student_by_uid(uid) or student
     payload = _certificate_payload_from_student(student, grade)
     result = _call_certificate_api(payload)
     pdf_bytes = _download_pdf_bytes(str(result.get("pdfUrl") or ""))
     stamped = _stamp_student_photo_on_pdf(pdf_bytes, student.get("image_path"))
     filename = f"{uuid.uuid4()}.pdf"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUTPUT_DIR / filename).write_bytes(stamped)
     record = {
         "certificateId": result.get("certificateId") or uid,
@@ -1845,7 +2802,14 @@ def _issue_certificate_for_student(student: dict, grade: str = "Excellent") -> d
         "email": str(student.get("email") or ""),
     }
     save_student_certificate(uid, payload["certificateNumber"], date.today().isoformat())
-    return _store_certificate_record(uid, record)
+    if grade in CERTIFICATE_GRADES:
+        set_trainer_grade(uid, grade)
+    stored = _store_certificate_record(uid, record)
+    if old_filename and old_filename != filename:
+        old_path = OUTPUT_DIR / Path(old_filename).name
+        if old_path.is_file():
+            old_path.unlink(missing_ok=True)
+    return stored
 
 
 @app.route("/api/certificate", methods=["GET"])
@@ -1959,6 +2923,9 @@ def generate_certificate():
                 }
             )
             student = get_student_by_uid(uid) or student
+        period_ok, period_error = _training_period_complete(student)
+        if not period_ok:
+            return jsonify({"success": False, "error": period_error}), 400
         grade = str(data.get("grade") or student.get("trainer_grade") or "").strip()
         if grade not in CERTIFICATE_GRADES:
             return jsonify({"success": False, "error": "Select Outstanding, Excellent, or Good first, then generate the certificate."}), 400
@@ -1989,7 +2956,19 @@ def generate_certificate():
     progress["pdf_filename"] = record.get("filename")
     session["progress"] = progress
     session.modified = True
-    return jsonify(_certificate_public(record))
+    public = _certificate_public(record)
+    if is_admin:
+        latest = get_student_by_uid(uid) or student
+        email = str(latest.get("email") or "").strip().lower()
+        if email and "@" in email:
+            ok, detail = _send_certificate_download_email(latest)
+            public["emailSent"] = ok
+            public["emailDetail"] = detail
+            public["email"] = email
+        else:
+            public["emailSent"] = False
+            public["emailDetail"] = "No registered student email to send."
+    return jsonify(public)
 
 
 @app.route("/verify")
@@ -2018,12 +2997,22 @@ def serve_generated(filename: str):
     if not file_path.is_file():
         abort(404)
     as_attachment = str(request.args.get("download") or "").lower() in ("1", "true", "yes")
+    download_name = "Certificate.pdf"
+    for rec in (_load_certificates() or {}).values():
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("filename") or "").strip() == filename:
+            download_name = _certificate_download_filename(
+                str(rec.get("candidateName") or ""),
+                str(rec.get("courseName") or ""),
+            )
+            break
     return send_from_directory(
         OUTPUT_DIR,
         filename,
         mimetype="application/pdf",
         as_attachment=as_attachment,
-        download_name="SFT-certificate.pdf",
+        download_name=download_name,
     )
 
 
@@ -2069,6 +3058,64 @@ def _is_institute_login(uid: str, email: str) -> bool:
         if uid == u and email == e:
             return True
     return False
+
+
+def _load_institute_auth() -> dict:
+    if not INSTITUTE_AUTH_FILE.is_file():
+        return {}
+    try:
+        data = json.loads(INSTITUTE_AUTH_FILE.read_text())
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_institute_auth(data: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    INSTITUTE_AUTH_FILE.write_text(json.dumps(data, indent=2))
+
+
+def _hash_institute_password(password: str, salt: str | None = None) -> tuple[str, str]:
+    salt_value = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        str(password).encode("utf-8"),
+        salt_value.encode("utf-8"),
+        120_000,
+    ).hex()
+    return salt_value, digest
+
+
+def _institute_password_set() -> bool:
+    auth = _load_institute_auth()
+    return bool(str(auth.get("password_hash") or "").strip() and str(auth.get("password_salt") or "").strip())
+
+
+def _verify_institute_password(password: str) -> bool:
+    auth = _load_institute_auth()
+    salt = str(auth.get("password_salt") or "").strip()
+    expected = str(auth.get("password_hash") or "").strip()
+    if not salt or not expected:
+        # No password configured yet — accept empty password only.
+        return not str(password or "").strip()
+    _, digest = _hash_institute_password(password, salt)
+    return secrets.compare_digest(digest, expected)
+
+
+def _set_institute_password(new_password: str) -> None:
+    salt, digest = _hash_institute_password(new_password)
+    auth = _load_institute_auth()
+    auth.update(
+        {
+            "uid": ADMIN_UID,
+            "email": ADMIN_EMAIL,
+            "name": INSTITUTE_NAME,
+            "password_salt": salt,
+            "password_hash": digest,
+            "updated_at": _iso(_now_utc()),
+        }
+    )
+    _save_institute_auth(auth)
 
 
 def _builtin_institute_courses() -> list[dict]:
@@ -2173,6 +3220,7 @@ def _course_student_titles(course: dict) -> set[str]:
     if course.get("id") == "plumbing":
         names.update(
             {
+                PLUMBING_COURSE_NAME,
                 "Professional Plumbing Foundation Course",
                 "Plumbing Foundational Course",
                 "Plumbing Foundation Course",
@@ -2232,9 +3280,9 @@ def _student_video_proof_for_steps(uid: str, steps: list[dict]) -> dict:
         "expected_steps": expected,
         "video_proof": f"{uploaded}/{expected}",
         "videos": videos,
-        "videos_complete": expected > 0 and uploaded >= expected,
+        "videos_complete": True,  # pathway videos optional
         "practical_uploaded": practical_ok,
-        "all_videos_complete": expected > 0 and uploaded >= expected and practical_ok,
+        "all_videos_complete": practical_ok,  # only final practical required
     }
 
 
@@ -2336,7 +3384,9 @@ def _enrich_student_record(student: dict, steps: list[dict]) -> dict:
     uid = str(student.get("uid") or "").strip()
     proof = _student_video_proof_for_steps(uid, steps)
     cert = _find_certificate(uid)
-    cert_public = _certificate_public(cert) if cert else None
+    pdf_ready = _certificate_pdf_ready(cert)
+    cert_public = _certificate_public(cert) if cert and pdf_ready else None
+    has_db_cert = bool(student.get("certificate_number") or student.get("issue_date"))
     photo_url = _public_student_photo_url(student)
     if photo_url and photo_url != str(student.get("image_path") or "").strip():
         _persist_student_photo_url(uid, photo_url)
@@ -2355,9 +3405,9 @@ def _enrich_student_record(student: dict, steps: list[dict]) -> dict:
         "week_scores": week_scores,
         "image_path": photo_url,
         "assessment_recorded": bool(student.get("assessment_completed_at") or proof.get("practical_uploaded")),
-        "certificate_recorded": bool(
-            student.get("certificate_number") or student.get("issue_date") or cert_public
-        ),
+        "certificate_recorded": pdf_ready,
+        "certificate_pdf_ready": pdf_ready,
+        "certificate_needs_regeneration": bool(has_db_cert and not pdf_ready),
         "trainer_verified": bool(student.get("videos_verified_at")),
         "all_videos_complete": proof.get("all_videos_complete"),
         "practical_uploaded": proof.get("practical_uploaded"),
@@ -2372,9 +3422,11 @@ def admin_status():
     return jsonify(
         {
             "authenticated": bool(session.get("is_admin")),
+            "passwordRequired": _institute_password_set(),
             "institute": {
                 "uid": session.get("institute_uid") or ADMIN_UID,
                 "name": session.get("institute_name") or INSTITUTE_NAME,
+                "email": session.get("institute_email") or ADMIN_EMAIL,
             }
             if session.get("is_admin")
             else None,
@@ -2387,6 +3439,7 @@ def admin_login():
     data = request.get_json(silent=True) or {}
     uid = str(data.get("uid") or "").strip().upper()
     email = str(data.get("email") or "").strip().lower()
+    password = str(data.get("password") or "")
 
     if not uid or not email:
         return jsonify({"success": False, "error": "Enter institute UID and email."}), 400
@@ -2394,11 +3447,62 @@ def admin_login():
     if not _is_institute_login(uid, email):
         return jsonify({"success": False, "error": "Invalid institute UID or email."}), 401
 
+    if _institute_password_set() and not _verify_institute_password(password):
+        return jsonify({"success": False, "error": "Incorrect password."}), 401
+
     session["is_admin"] = True
     session["institute_uid"] = uid
     session["institute_name"] = INSTITUTE_NAME
+    session["institute_email"] = email
     session.modified = True
-    return jsonify({"success": True, "institute": {"uid": uid, "name": INSTITUTE_NAME}})
+    return jsonify(
+        {
+            "success": True,
+            "institute": {"uid": uid, "name": INSTITUTE_NAME, "email": email},
+        }
+    )
+
+
+@app.route("/api/admin/profile", methods=["GET"])
+def admin_profile():
+    denied = _require_admin()
+    if denied:
+        return denied
+    return jsonify(
+        {
+            "success": True,
+            "institute": {
+                "uid": session.get("institute_uid") or ADMIN_UID,
+                "name": session.get("institute_name") or INSTITUTE_NAME,
+                "email": session.get("institute_email") or ADMIN_EMAIL,
+                "logoUrl": "/static/images/eurotech-logo.png",
+                "passwordSet": _institute_password_set(),
+                "courses": len(_load_institute_courses()),
+            },
+        }
+    )
+
+
+@app.route("/api/admin/password", methods=["POST"])
+def admin_change_password():
+    denied = _require_admin()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    current_password = str(data.get("currentPassword") or data.get("current_password") or "")
+    new_password = str(data.get("newPassword") or data.get("new_password") or "")
+    confirm_password = str(data.get("confirmPassword") or data.get("confirm_password") or "")
+
+    if len(new_password) < 6:
+        return jsonify({"success": False, "error": "New password must be at least 6 characters."}), 400
+    if new_password != confirm_password:
+        return jsonify({"success": False, "error": "New password and confirmation do not match."}), 400
+
+    if _institute_password_set() and not _verify_institute_password(current_password):
+        return jsonify({"success": False, "error": "Current password is incorrect."}), 400
+
+    _set_institute_password(new_password)
+    return jsonify({"success": True, "message": "Password updated. Use it next time you sign in."})
 
 
 @app.route("/api/admin/logout", methods=["POST"])
@@ -2907,9 +4011,9 @@ def _student_video_proof(uid: str, expected_steps: int | None = None) -> dict:
         "expected_steps": expected,
         "video_proof": f"{uploaded}/{expected}",
         "videos": videos,
-        "videos_complete": expected > 0 and uploaded >= expected,
+        "videos_complete": True,  # pathway videos optional
         "practical_uploaded": practical_ok,
-        "all_videos_complete": expected > 0 and uploaded >= expected and practical_ok,
+        "all_videos_complete": practical_ok,  # only final practical required
     }
 
 
@@ -3057,11 +4161,71 @@ def admin_list_video_access_requests():
                     "organisation": r.get("organisation"),
                     "email": r.get("email"),
                     "location": r.get("location"),
+                    "status": r.get("status") or "pending",
                     "createdAt": r.get("created_at"),
                     "expiresAt": r.get("expires_at"),
+                    "approvedAt": r.get("approved_at"),
                 }
                 for r in rows
             ],
+        }
+    )
+
+
+@app.route("/api/admin/video-access-requests/<int:request_id>/approve", methods=["POST"])
+def admin_approve_video_access(request_id: int):
+    denied = _require_admin()
+    if denied:
+        return denied
+    record = get_video_access_request_by_id(request_id)
+    if not record:
+        return jsonify({"success": False, "error": "Request not found."}), 404
+    if str(record.get("status") or "").lower() != "pending":
+        return jsonify({"success": False, "error": "This request is already processed."}), 400
+    approved = approve_video_access_request(request_id)
+    if not approved:
+        return jsonify({"success": False, "error": "Could not approve request."}), 500
+    uid = str(approved.get("uid") or "").strip()
+    token = str(approved.get("token") or "").strip()
+    return jsonify(
+        {
+            "success": True,
+            "message": f"Video access approved for {approved.get('visitor_name')}.",
+            "request": {
+                "id": approved.get("id"),
+                "uid": uid,
+                "email": approved.get("email"),
+                "status": approved.get("status"),
+                "approvedAt": approved.get("approved_at"),
+            },
+            "videos": _videos_with_access_token(uid, token) if uid and token else [],
+        }
+    )
+
+
+@app.route("/api/admin/video-access-requests/<int:request_id>/reject", methods=["POST"])
+def admin_reject_video_access(request_id: int):
+    denied = _require_admin()
+    if denied:
+        return denied
+    record = get_video_access_request_by_id(request_id)
+    if not record:
+        return jsonify({"success": False, "error": "Request not found."}), 404
+    if str(record.get("status") or "").lower() != "pending":
+        return jsonify({"success": False, "error": "This request is already processed."}), 400
+    rejected = reject_video_access_request(request_id)
+    if not rejected:
+        return jsonify({"success": False, "error": "Could not reject request."}), 500
+    return jsonify(
+        {
+            "success": True,
+            "message": f"Video access request from {rejected.get('visitor_name')} was rejected.",
+            "request": {
+                "id": rejected.get("id"),
+                "uid": rejected.get("uid"),
+                "email": rejected.get("email"),
+                "status": rejected.get("status"),
+            },
         }
     )
 
@@ -3191,14 +4355,52 @@ def admin_set_student_score(uid: str):
     return jsonify({"success": True, "message": "Score saved. Trainers cannot see this.", "trainer_score": score, "student": student})
 
 
+@app.route("/api/admin/students/<uid>/send-certificate", methods=["POST"])
+def admin_send_certificate_email(uid: str):
+    denied = _require_admin()
+    if denied:
+        return denied
+    uid = str(uid or "").strip()
+    student = get_student_by_uid(uid)
+    if not student:
+        return jsonify({"success": False, "error": "Student not found."}), 404
+
+    payload = request.get_json(silent=True) or {}
+    requested_email = str(payload.get("email") or "").strip().lower()
+    if requested_email:
+        if "@" not in requested_email or "." not in requested_email.split("@")[-1]:
+            return jsonify({"success": False, "error": "Enter a valid student email address."}), 400
+        if requested_email != str(student.get("email") or "").strip().lower():
+            updated = upsert_student({**student, "email": requested_email})
+            student = updated or {**student, "email": requested_email}
+
+    ok, detail = _send_certificate_download_email(student, to_email=requested_email or None)
+    if not ok:
+        return jsonify({"success": False, "error": detail}), 400
+    email = str(requested_email or student.get("email") or "").strip().lower()
+    return jsonify(
+        {
+            "success": True,
+            "message": f"Certificate download email sent to {email}.",
+            "email": email,
+            "detail": detail,
+            "student": public_student_view(student),
+        }
+    )
+
+
 @app.route("/api/admin/students/<uid>/grade", methods=["POST"])
 def admin_set_student_grade(uid: str):
     denied = _require_admin()
     if denied:
         return denied
     uid = str(uid or "").strip()
-    if not get_student_by_uid(uid):
+    student = get_student_by_uid(uid)
+    if not student:
         return jsonify({"success": False, "error": "Student not found."}), 404
+    period_ok, period_error = _training_period_complete(student)
+    if not period_ok:
+        return jsonify({"success": False, "error": period_error}), 400
     data = request.get_json(silent=True) or {}
     grade = str(data.get("grade") or "").strip()
     if grade not in CERTIFICATE_GRADES:
@@ -3222,14 +4424,20 @@ def admin_verify_student_videos(uid: str):
     if not student:
         return jsonify({"success": False, "error": "Trainer not found."}), 404
     proof = _student_video_proof(uid)
-    if not proof.get("all_videos_complete"):
+    if not proof.get("practical_uploaded"):
         return jsonify(
             {
                 "success": False,
-                "error": "Trainer must upload all pathway videos and the 2-minute practical video first.",
+                "error": "Upload the required 2-minute practical video first. Week videos are optional.",
             }
         ), 400
-    keys = [str(v.get("id")) for v in (proof.get("videos") or [])]
+    keys = [
+        str(v.get("id"))
+        for v in (proof.get("videos") or [])
+        if v.get("uploaded") or str(v.get("kind") or "") == "practical"
+    ]
+    if "practical" not in keys:
+        keys.append("practical")
     set_all_video_reviews(uid, "approved", keys)
     mark_student_milestone(uid, videos_verified_at=_iso(_now_utc()))
     existing = _find_certificate(uid)
@@ -3284,12 +4492,67 @@ def admin_upsert_student():
                 "certificate_number": str(data.get("certificate_number", "")).strip() or None,
                 "issue_date": str(data.get("issue_date", "")).strip() or None,
                 "image_path": image_path,
+                "email": str(data.get("email", "")).strip().lower(),
+                "phone": str(data.get("phone", "")).strip(),
             }
         )
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
 
     return jsonify({"success": True, "student": student, "students": list_students()})
+
+
+@app.route("/api/admin/students/<uid>", methods=["PUT", "PATCH"])
+def admin_update_student(uid: str):
+    denied = _require_admin()
+    if denied:
+        return denied
+    uid = str(uid or "").strip()
+    existing = get_student_by_uid(uid)
+    if not existing:
+        return jsonify({"success": False, "error": "Student not found."}), 404
+
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name") or existing.get("name") or "").strip()
+    if not name:
+        return jsonify({"success": False, "error": "Student name is required."}), 400
+
+    batch_start = str(data.get("batch_start") or existing.get("batch_start") or "").strip()[:10]
+    batch_end = str(data.get("batch_end") or existing.get("batch_end") or "").strip()[:10]
+    issue_date = str(data.get("issue_date") or existing.get("issue_date") or "").strip()[:10] or None
+    if batch_start and batch_end and batch_end < batch_start:
+        return jsonify({"success": False, "error": "Batch end date must be on or after start date."}), 400
+
+    try:
+        student = upsert_student(
+            {
+                "uid": uid,
+                "name": name,
+                "father_name": str(data.get("father_name", existing.get("father_name") or "")).strip(),
+                "course_name": str(data.get("course_name") or existing.get("course_name") or "").strip(),
+                "batch_start": batch_start or existing.get("batch_start"),
+                "batch_end": batch_end or existing.get("batch_end"),
+                "certificate_number": str(
+                    data.get("certificate_number") or existing.get("certificate_number") or ""
+                ).strip()
+                or None,
+                "issue_date": issue_date,
+                "image_path": existing.get("image_path"),
+                "email": str(data.get("email", existing.get("email") or "")).strip().lower(),
+                "phone": str(data.get("phone", existing.get("phone") or "")).strip(),
+                "status": existing.get("status") or "admitted",
+            }
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    course = _get_course_by_id("plumbing")
+    for item in _load_institute_courses():
+        if str(student.get("course_name") or "").strip() in _course_student_titles(item):
+            course = item
+            break
+    steps = _course_pathway_steps(course) if course else _training_pathway_steps()
+    return jsonify({"success": True, "message": "Student details saved.", "student": _enrich_student_record(student, steps)})
 
 
 @app.route("/health")

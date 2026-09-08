@@ -14,7 +14,6 @@ import {
   ShieldCheck,
   User,
   Video,
-  X,
 } from 'lucide-react'
 import { api } from '../api/client'
 import { useApp } from '../context/AppContext'
@@ -38,20 +37,37 @@ function videoAccessStorageKey(uid: string) {
   return `sft-verify-video-access:${uid.trim().toUpperCase()}`
 }
 
-type VisitorForm = {
-  name: string
-  organisation: string
-  email: string
-  location: string
+declare global {
+  interface Window {
+    Razorpay?: new (options: Record<string, unknown>) => { open: () => void }
+  }
 }
 
-const EMPTY_VISITOR: VisitorForm = { name: '', organisation: '', email: '', location: '' }
+function loadRazorpayScript(): Promise<void> {
+  if (window.Razorpay) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-razorpay="1"]')
+    if (existing) {
+      existing.addEventListener('load', () => resolve())
+      existing.addEventListener('error', () => reject(new Error('Could not load Razorpay.')))
+      return
+    }
+    const script = document.createElement('script')
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js'
+    script.async = true
+    script.dataset.razorpay = '1'
+    script.onload = () => resolve()
+    script.onerror = () => reject(new Error('Could not load Razorpay checkout.'))
+    document.body.appendChild(script)
+  })
+}
 
 function fromLmsPayload(res: Awaited<ReturnType<typeof api.verifyCertificate>>): VerifyResult {
   if (!res.ok) return { found: false }
   const c = res.certificate || {}
   const p = res.proofs
   const s = res.student
+  const unlock = res.unlock
   return {
     found: true,
     approved: Boolean(res.verified ?? p?.approved),
@@ -62,10 +78,23 @@ function fromLmsPayload(res: Awaited<ReturnType<typeof api.verifyCertificate>>):
       courseName: String(c.courseTitle || s?.course_name || ''),
       certificateNumber: String(c.certificateNumber || s?.certificate_number || ''),
       issueDate: String(c.issuedAt || s?.issue_date || ''),
-      grade: 'Excellent',
+      grade: String(c.grade || s?.trainer_grade || 'Excellent'),
     },
+    pdfReady: Boolean(c.pdfReady),
     pdfUrl: c.pdfUrl ? String(c.pdfUrl) : null,
     downloadUrl: c.pdfUrl ? String(c.pdfUrl) : null,
+    unlock: unlock
+      ? {
+          required: Boolean(unlock.required),
+          unlocked: Boolean(unlock.unlocked),
+          amount: unlock.amount,
+          currency: unlock.currency,
+          label: unlock.label || '$10',
+          razorpayKeyId: unlock.razorpayKeyId,
+          configured: Boolean(unlock.configured),
+          options: unlock.options,
+        }
+      : undefined,
     videos: p?.videos,
     videosComplete: p?.videosComplete,
     uploadedSteps: p?.uploadedSteps,
@@ -78,7 +107,7 @@ function fromLmsPayload(res: Awaited<ReturnType<typeof api.verifyCertificate>>):
 const FEATURES = [
   { icon: ShieldCheck, label: 'Verify', text: 'Confirm certificate authenticity' },
   { icon: FileText, label: 'Access', text: 'View training & assessment details' },
-  { icon: Download, label: 'Download', text: 'Get your verified certificate PDF' },
+  { icon: Download, label: 'Records', text: 'Review verified certificate details' },
   { icon: Lock, label: 'Secure', text: 'Your data is safe and protected' },
 ] as const
 
@@ -86,7 +115,7 @@ const TRUST_ITEMS = [
   {
     id: 'accredited',
     title: 'Accredited & Trusted',
-    text: 'Certificates are issued by SFT Global Skill Assessment Council.',
+    text: 'Certificates are issued by Global Skill Assessment Council.',
   },
   {
     id: 'authentic',
@@ -157,10 +186,10 @@ export function VerifyPage() {
   const [number, setNumber] = useState('')
   const [videosUnlocked, setVideosUnlocked] = useState(false)
   const [unlockedVideos, setUnlockedVideos] = useState<VerifyVideoProof[] | null>(null)
-  const [accessModalOpen, setAccessModalOpen] = useState(false)
-  const [visitor, setVisitor] = useState<VisitorForm>(EMPTY_VISITOR)
-  const [visitorError, setVisitorError] = useState('')
-  const [visitorBusy, setVisitorBusy] = useState(false)
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null)
+  const [payBusy, setPayBusy] = useState(false)
+  const [payError, setPayError] = useState('')
+  const [payerEmail, setPayerEmail] = useState('')
 
   const queryUid = useMemo(() => String(searchParams.get('uid') || searchParams.get('delegate') || '').trim(), [searchParams])
   const queryNumber = useMemo(
@@ -169,7 +198,7 @@ export function VerifyPage() {
   )
 
   const brand = data?.brand || config?.brand
-  const councilName = brand?.name ?? 'SFT Global Skill Assessment Council'
+  const councilName = brand?.name ?? 'Global Skill Assessment Council'
   const tagline = brand?.tagline ?? 'Assessing Skills. Validating Competence.'
   const website = 'https://sftlms.com/'
   const websiteLabel = 'www.sftlms.com'
@@ -193,6 +222,8 @@ export function VerifyPage() {
       setFormError('')
       setVideosUnlocked(false)
       setUnlockedVideos(null)
+      setDownloadUrl(null)
+      setPayError('')
       api
         .verifyCertificate(queryUid, queryNumber)
         .then((res) => {
@@ -205,10 +236,15 @@ export function VerifyPage() {
           const cached = sessionStorage.getItem(videoAccessStorageKey(queryUid))
           if (cached) {
             try {
-              const parsed = JSON.parse(cached) as { token?: string; videos?: VerifyVideoProof[] }
+              const parsed = JSON.parse(cached) as {
+                token?: string
+                videos?: VerifyVideoProof[]
+                downloadUrl?: string
+              }
               if (parsed.token && Array.isArray(parsed.videos)) {
                 setUnlockedVideos(parsed.videos)
                 setVideosUnlocked(true)
+                if (parsed.downloadUrl) setDownloadUrl(parsed.downloadUrl)
               }
             } catch {
               sessionStorage.removeItem(videoAccessStorageKey(queryUid))
@@ -227,6 +263,8 @@ export function VerifyPage() {
       setFormError('')
       setVideosUnlocked(false)
       setUnlockedVideos(null)
+      setDownloadUrl(null)
+      setPayError('')
       api
         .verify(certId)
         .then((res) => {
@@ -235,10 +273,15 @@ export function VerifyPage() {
           const cached = sessionStorage.getItem(videoAccessStorageKey(keyUid))
           if (cached) {
             try {
-              const parsed = JSON.parse(cached) as { token?: string; videos?: VerifyVideoProof[] }
+              const parsed = JSON.parse(cached) as {
+                token?: string
+                videos?: VerifyVideoProof[]
+                downloadUrl?: string
+              }
               if (parsed.token && Array.isArray(parsed.videos)) {
                 setUnlockedVideos(parsed.videos)
                 setVideosUnlocked(true)
+                if (parsed.downloadUrl) setDownloadUrl(parsed.downloadUrl)
               }
             } catch {
               sessionStorage.removeItem(videoAccessStorageKey(keyUid))
@@ -267,11 +310,6 @@ export function VerifyPage() {
     setSearchParams({ uid: roll, number: num, q: num })
   }
 
-  const openVideoAccessModal = () => {
-    setVisitorError('')
-    setAccessModalOpen(true)
-  }
-
   const student = data?.student
   const cert = data?.cert
   const name = cert?.candidateName || student?.name || ''
@@ -279,49 +317,127 @@ export function VerifyPage() {
   const photo = (student as Student | undefined)?.image_path || '/static/icons/icon-192.png'
   const videos = (videosUnlocked && unlockedVideos ? unlockedVideos : data?.videos) ?? []
   const showLanding = !data?.found
+  const unlockLabel = data?.unlock?.label || '$10'
+  const pdfReady = Boolean(data?.pdfReady || data?.downloadUrl || data?.pdfUrl || downloadUrl)
+  const activeDownloadUrl = downloadUrl || data?.downloadUrl || data?.pdfUrl || null
 
-  const submitVideoAccess = async (event: FormEvent) => {
-    event.preventDefault()
+  const applyUnlock = (payload: {
+    token?: string
+    videos?: VerifyVideoProof[]
+    downloadUrl?: string
+    pdfUrl?: string
+  }) => {
+    const roll = String(student?.uid || queryUid || uid || data?.certId || '').trim().toUpperCase()
+    const token = String(payload.token || '').trim()
+    const vids = payload.videos || []
+    const url = payload.downloadUrl || payload.pdfUrl || null
+    if (!token) return
+    setUnlockedVideos(vids)
+    setVideosUnlocked(true)
+    if (url) setDownloadUrl(url)
+    if (roll) {
+      sessionStorage.setItem(
+        videoAccessStorageKey(roll),
+        JSON.stringify({ token, videos: vids, downloadUrl: url }),
+      )
+    }
+  }
+
+  const startUnlockPayment = async () => {
     const roll = String(student?.uid || queryUid || uid || data?.certId || '').trim().toUpperCase()
     const num = String(
       cert?.certificateNumber || student?.certificate_number || queryNumber || number || '',
     ).trim()
     if (!roll || !num) {
-      setVisitorError('Certificate details are missing. Search again first.')
+      setPayError('Certificate details are missing. Search again first.')
       return
     }
-    if (!visitor.name.trim() || !visitor.organisation.trim() || !visitor.email.trim() || !visitor.location.trim()) {
-      setVisitorError('Please fill in name, organisation, email, and location.')
-      return
-    }
-    setVisitorBusy(true)
-    setVisitorError('')
+    setPayBusy(true)
+    setPayError('')
     try {
-      const res = await api.requestVerifyVideoAccess({
+      await loadRazorpayScript()
+      const order = await api.createVerifyUnlockOrder({
         uid: roll,
         number: num,
-        name: visitor.name.trim(),
-        organisation: visitor.organisation.trim(),
-        email: visitor.email.trim(),
-        location: visitor.location.trim(),
+        email: payerEmail.trim() || student?.email || undefined,
+        region: 'national',
       })
-      if (!res.ok) {
-        setVisitorError(res.message || 'Could not unlock videos.')
+      if (!order.ok || !order.orderId || !order.keyId) {
+        setPayError(order.message || 'Could not start payment.')
+        setPayBusy(false)
         return
       }
-      const nextVideos = res.videos || []
-      setUnlockedVideos(nextVideos)
-      setVideosUnlocked(true)
-      sessionStorage.setItem(
-        videoAccessStorageKey(roll),
-        JSON.stringify({ token: res.token, videos: nextVideos }),
-      )
-      setAccessModalOpen(false)
-      setVisitor(EMPTY_VISITOR)
+      if (!window.Razorpay) {
+        setPayError('Razorpay checkout failed to load.')
+        setPayBusy(false)
+        return
+      }
+      const rzp = new window.Razorpay({
+        key: order.keyId,
+        amount: order.amount,
+        currency: order.currency || 'INR',
+        name: order.name || 'Global Skill Assessment Council',
+        description: order.description || `Unlock certificate + videos (${order.label || unlockLabel})`,
+        order_id: order.orderId,
+        prefill: {
+          email: payerEmail.trim() || order.prefill?.email || student?.email || '',
+          name: order.prefill?.name || name || '',
+          contact:
+            String(order.prefill?.contact || (student as Student | undefined)?.phone || '')
+              .replace(/\D/g, '')
+              .slice(-10) || undefined,
+        },
+        config: {
+          display: {
+            blocks: {
+              all: {
+                name: 'Pay $10',
+                instruments: [
+                  { method: 'upi' },
+                  { method: 'card' },
+                  { method: 'netbanking' },
+                  { method: 'wallet' },
+                ],
+              },
+            },
+            sequence: ['block.all'],
+            preferences: { show_default_blocks: true },
+          },
+        },
+        theme: { color: '#0d4f3c' },
+        handler: async (response: {
+          razorpay_order_id: string
+          razorpay_payment_id: string
+          razorpay_signature: string
+        }) => {
+          try {
+            const confirmed = await api.confirmVerifyUnlock({
+              uid: roll,
+              number: num,
+              email: payerEmail.trim() || student?.email || undefined,
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+            })
+            if (!confirmed.ok || !confirmed.unlocked) {
+              setPayError(confirmed.message || 'Payment could not be verified.')
+              return
+            }
+            applyUnlock(confirmed)
+          } catch (err) {
+            setPayError(err instanceof Error ? err.message : 'Payment confirmation failed.')
+          } finally {
+            setPayBusy(false)
+          }
+        },
+        modal: {
+          ondismiss: () => setPayBusy(false),
+        },
+      })
+      rzp.open()
     } catch (err) {
-      setVisitorError(err instanceof Error ? err.message : 'Could not unlock videos.')
-    } finally {
-      setVisitorBusy(false)
+      setPayError(err instanceof Error ? err.message : 'Could not start payment.')
+      setPayBusy(false)
     }
   }
 
@@ -367,8 +483,8 @@ export function VerifyPage() {
               </span>
             </h1>
             <p className="mt-5 max-w-md text-sm leading-7 text-white/72 lg:text-[0.95rem]">
-              Validate your certificate instantly against the official SFT database. Access training records,
-              assessment status, and download your verified certificate PDF.
+              Validate your certificate instantly against the official SFT database. Access training records
+              and assessment status.
             </p>
             <div className="mt-8 grid grid-cols-2 gap-6 sm:grid-cols-4 lg:gap-5">
               {FEATURES.map((item) => (
@@ -523,7 +639,6 @@ export function VerifyPage() {
                 {student?.father_name && <p className="text-sm text-slate-500">S/O {student.father_name}</p>}
                 <p className="mt-2 text-sm font-semibold text-emerald-800">{course}</p>
                 <div className="mt-4 flex flex-wrap justify-center gap-2 lg:justify-start">
-                  <StatusPill ok={Boolean(data.videosComplete)} label={`Videos ${data.uploadedSteps ?? 0}/${data.expectedSteps ?? videos.length}`} />
                   <StatusPill ok={Boolean(data.assessmentPassed)} label="Assessment" />
                   <StatusPill ok={Boolean(data.certificateApproved)} label="Certificate" />
                 </div>
@@ -538,25 +653,85 @@ export function VerifyPage() {
                     ['Batch', student?.batch_duration],
                     ['Grade', cert?.grade || 'Excellent'],
                     ['Email', student?.email],
-                  ].map(([label, value]) => (
-                    <div key={String(label)} className="rounded-xl bg-[#f7f4ee] px-4 py-3 ring-1 ring-[#e8e0d0]">
-                      <p className="text-[0.65rem] font-bold uppercase tracking-wide text-slate-400">{label}</p>
-                      <p className="mt-1 text-sm font-semibold text-slate-800">{value || '—'}</p>
-                    </div>
-                  ))}
+                  ].map(([label, value]) => {
+                    const isGrade = label === 'Grade'
+                    const lockedGrade = isGrade && !videosUnlocked
+                    return (
+                      <div
+                        key={String(label)}
+                        className={`relative overflow-hidden rounded-xl bg-[#f7f4ee] px-4 py-3 ring-1 ring-[#e8e0d0] ${
+                          lockedGrade ? 'select-none' : ''
+                        }`}
+                      >
+                        <p className="text-[0.65rem] font-bold uppercase tracking-wide text-slate-400">{label}</p>
+                        <p
+                          className={`mt-1 text-sm font-semibold text-slate-800 ${
+                            lockedGrade ? 'blur-[6px]' : ''
+                          }`}
+                        >
+                          {lockedGrade ? 'Excellent' : value || '—'}
+                        </p>
+                        {lockedGrade ? (
+                          <div className="absolute inset-0 flex items-center justify-end bg-gradient-to-l from-[#f7f4ee]/95 via-[#f7f4ee]/55 to-transparent pr-3">
+                            <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-950/80 px-2 py-1 text-[0.62rem] font-bold uppercase tracking-wide text-white">
+                              <Lock size={11} /> Locked
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+                    )
+                  })}
                 </div>
 
-                {(data.downloadUrl || data.pdfUrl) && (
-                  <a
-                    href={data.downloadUrl || data.pdfUrl || '#'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="verify-submit-btn inline-flex items-center gap-2 rounded-xl px-5 py-3 text-sm font-bold text-white"
-                  >
-                    <Download size={16} />
-                    Open Certificate PDF
-                  </a>
-                )}
+                <div className="space-y-3">
+                  {videosUnlocked && activeDownloadUrl ? (
+                    <a
+                      href={activeDownloadUrl}
+                      className="verify-submit-btn inline-flex items-center gap-2 rounded-xl px-5 py-3 text-sm font-bold text-white"
+                    >
+                      <Download size={16} />
+                      Download certificate
+                    </a>
+                  ) : null}
+                  {videosUnlocked && !activeDownloadUrl ? (
+                    <p className="text-sm text-slate-500">
+                      Videos unlocked. Certificate PDF is not ready yet.
+                    </p>
+                  ) : null}
+                  {!videosUnlocked ? (
+                    <div className="rounded-xl bg-[#f7f4ee] p-4 ring-1 ring-[#e8e0d0]">
+                      <p className="text-sm font-semibold text-emerald-950">
+                        Unlock grade, certificate download + training videos for {unlockLabel}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        One {unlockLabel} payment for India and international users. Unlocks grade
+                        {pdfReady ? ', PDF download,' : ''} and all training videos (UPI, cards, netbanking, wallets).
+                      </p>
+                      <label className="mt-3 block">
+                        <span className="mb-1 block text-[0.65rem] font-bold uppercase tracking-wide text-slate-400">
+                          Receipt email (optional)
+                        </span>
+                        <input
+                          type="email"
+                          value={payerEmail}
+                          onChange={(e) => setPayerEmail(e.target.value)}
+                          placeholder={student?.email || 'name@example.com'}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none ring-emerald-700/30 focus:ring-2"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => void startUnlockPayment()}
+                        disabled={payBusy}
+                        className="verify-submit-btn mt-3 inline-flex items-center gap-2 rounded-xl px-5 py-3 text-sm font-bold text-white disabled:opacity-60"
+                      >
+                        <Lock size={16} />
+                        {payBusy ? 'Opening Razorpay…' : `Pay ${unlockLabel} to unlock`}
+                      </button>
+                      {payError && <p className="mt-2 text-sm font-medium text-red-700">{payError}</p>}
+                    </div>
+                  ) : null}
+                </div>
 
                 <section>
                   <h3 className="verify-serif mb-3 flex items-center gap-2 text-base font-bold text-emerald-900">
@@ -566,7 +741,7 @@ export function VerifyPage() {
                   <p className="mb-4 text-sm text-slate-500">
                     {videosUnlocked
                       ? 'Access granted. Play uploaded training videos below.'
-                      : 'All training videos are locked. Request access once to unlock them.'}
+                      : `Videos and grade are locked. Pay ${unlockLabel} once to unlock grade, certificate download, and all training videos.`}
                   </p>
                   <div className="relative overflow-hidden rounded-2xl ring-1 ring-slate-200">
                     <div className={`grid gap-4 p-4 md:grid-cols-2 ${videosUnlocked ? '' : 'pointer-events-none select-none blur-[2px]'}`}>
@@ -613,15 +788,16 @@ export function VerifyPage() {
                     {!videosUnlocked && (
                       <button
                         type="button"
-                        onClick={openVideoAccessModal}
-                        className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-emerald-950/55 px-6 text-white transition hover:bg-emerald-950/65"
+                        onClick={() => void startUnlockPayment()}
+                        disabled={payBusy}
+                        className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-emerald-950/55 px-6 text-white transition hover:bg-emerald-950/65 disabled:opacity-80"
                       >
                         <span className="flex h-16 w-16 items-center justify-center rounded-full bg-amber-500 shadow-xl">
                           <Lock size={28} className="text-white" />
                         </span>
                         <span className="text-lg font-bold">Locked</span>
                         <span className="max-w-xs text-center text-sm text-white/85">
-                          Click to request access and unlock all training videos
+                          {payBusy ? 'Opening Razorpay…' : `Pay ${unlockLabel} to unlock videos + grade`}
                         </span>
                       </button>
                     )}
@@ -668,7 +844,7 @@ export function VerifyPage() {
               </p>
               <p className="verify-gold mt-1.5 text-sm italic">{tagline}</p>
               <p className="mt-1 text-[0.7rem] text-white/55">
-                Certified by {brand?.powered_by ?? 'SFT Global Skill Assessment Council'}
+                Certified by {brand?.powered_by ?? 'Sustainable Futuristic Trainings LLC'}
               </p>
             </div>
           </div>
@@ -716,77 +892,6 @@ export function VerifyPage() {
           </div>
         </div>
       </footer>
-
-      {accessModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/60 p-4 backdrop-blur-sm">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="video-access-title"
-            className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200"
-          >
-            <div className="flex items-start justify-between gap-3 bg-emerald-900 px-5 py-4 text-white">
-              <div>
-                <p id="video-access-title" className="verify-serif text-lg font-bold">
-                  Request video access
-                </p>
-                <p className="mt-1 text-sm text-white/75">
-                  Enter your details to unlock training video proofs.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setAccessModalOpen(false)}
-                className="rounded-lg p-1.5 text-white/80 hover:bg-white/10 hover:text-white"
-                aria-label="Close"
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <form onSubmit={submitVideoAccess} className="space-y-3 p-5">
-              {(
-                [
-                  ['name', 'Name', 'Your full name'],
-                  ['organisation', 'Organisation', 'Company or institute'],
-                  ['email', 'Email address', 'name@example.com'],
-                  ['location', 'Location', 'City / country'],
-                ] as const
-              ).map(([key, label, placeholder]) => (
-                <label key={key} className="block">
-                  <span className="mb-1 block text-[0.7rem] font-bold uppercase tracking-wide text-slate-500">
-                    {label}
-                  </span>
-                  <input
-                    type={key === 'email' ? 'email' : 'text'}
-                    required
-                    value={visitor[key]}
-                    onChange={(e) => setVisitor((prev) => ({ ...prev, [key]: e.target.value }))}
-                    placeholder={placeholder}
-                    className="w-full rounded-xl border border-slate-200 bg-[#f7f4ee] px-3 py-2.5 text-sm text-slate-800 outline-none ring-emerald-700/30 focus:ring-2"
-                  />
-                </label>
-              ))}
-              {visitorError && <p className="text-sm font-medium text-red-700">{visitorError}</p>}
-              <div className="flex gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setAccessModalOpen(false)}
-                  className="flex-1 rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={visitorBusy}
-                  className="verify-submit-btn flex-1 rounded-xl px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
-                >
-                  {visitorBusy ? 'Submitting…' : 'Unlock videos'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

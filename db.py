@@ -137,10 +137,30 @@ SCHEMA_STATEMENTS = [
         organisation VARCHAR(255) NOT NULL,
         email VARCHAR(255) NOT NULL,
         location VARCHAR(255) NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        approved_at DATETIME NULL,
         expires_at DATETIME NOT NULL,
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE KEY uq_video_access_token (token),
         KEY idx_video_access_uid (uid)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS verify_unlock_payments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        order_id VARCHAR(64) NOT NULL,
+        payment_id VARCHAR(64) NULL,
+        uid VARCHAR(32) NOT NULL,
+        certificate_number VARCHAR(64) NULL,
+        email VARCHAR(255) NULL,
+        amount INT NOT NULL,
+        currency VARCHAR(8) NOT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'created',
+        access_token VARCHAR(128) NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_verify_unlock_order (order_id),
+        UNIQUE KEY uq_verify_unlock_payment (payment_id),
+        KEY idx_verify_unlock_uid (uid)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
 ]
@@ -181,7 +201,22 @@ CREATE TABLE IF NOT EXISTS video_access_requests (
     organisation TEXT NOT NULL,
     email TEXT NOT NULL,
     location TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    approved_at TEXT NULL,
     expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS verify_unlock_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id TEXT NOT NULL UNIQUE,
+    payment_id TEXT NULL UNIQUE,
+    uid TEXT NOT NULL,
+    certificate_number TEXT NULL,
+    email TEXT NULL,
+    amount INTEGER NOT NULL,
+    currency TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'created',
+    access_token TEXT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
@@ -382,6 +417,14 @@ def _has_column(cur, name: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _has_table_column(cur, table: str, column: str) -> bool:
+    if uses_sqlite():
+        cur.execute(f"PRAGMA table_info({table})")
+        return any(str(row.get("name") or "").lower() == column.lower() for row in (cur.fetchall() or []))
+    cur.execute(f"SHOW COLUMNS FROM {table} LIKE %s", (column,))
+    return cur.fetchone() is not None
+
+
 def init_db() -> None:
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -411,6 +454,16 @@ def init_db() -> None:
                 cur.execute("ALTER TABLE students ADD COLUMN week_scores TEXT NULL")
             if not _has_column(cur, "trainer_grade"):
                 cur.execute("ALTER TABLE students ADD COLUMN trainer_grade VARCHAR(64) NULL")
+            if not _has_table_column(cur, "video_access_requests", "status"):
+                cur.execute(
+                    "ALTER TABLE video_access_requests ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'pending'"
+                )
+                cur.execute("UPDATE video_access_requests SET status = 'approved'")
+            if not _has_table_column(cur, "video_access_requests", "approved_at"):
+                if uses_sqlite():
+                    cur.execute("ALTER TABLE video_access_requests ADD COLUMN approved_at TEXT NULL")
+                else:
+                    cur.execute("ALTER TABLE video_access_requests ADD COLUMN approved_at DATETIME NULL")
             _migrate_legacy_uids(cur)
             _migrate_certificate_numbers(cur)
     init_lms_bridge()
@@ -1399,16 +1452,22 @@ def create_video_access_request(
     hours: int = 24,
 ) -> dict:
     uid = str(uid or "").strip()
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=max(1, int(hours)))
-    expires_sql = expires_at.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    email_l = str(email or "").strip().lower()
+    pending = get_pending_video_access_request(uid, email_l)
+    if pending:
+        return pending
+    # Placeholder expiry until approved; approved requests get a fresh window.
+    expires_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    expires_sql = expires_at.strftime("%Y-%m-%d %H:%M:%S")
     payload = (
         token,
         uid,
         str(certificate_number or "").strip(),
         str(visitor_name or "").strip(),
         str(organisation or "").strip(),
-        str(email or "").strip().lower(),
+        email_l,
         str(location or "").strip(),
+        "pending",
         expires_sql,
     )
     with get_connection() as conn:
@@ -1416,23 +1475,14 @@ def create_video_access_request(
             cur.execute(
                 """
                 INSERT INTO video_access_requests (
-                    token, uid, certificate_number, visitor_name, organisation, email, location, expires_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    token, uid, certificate_number, visitor_name, organisation, email, location,
+                    status, expires_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 payload,
             )
             row_id = cur.lastrowid
-            cur.execute(
-                """
-                SELECT id, token, uid, certificate_number, visitor_name, organisation, email, location,
-                       expires_at, created_at
-                FROM video_access_requests
-                WHERE id = %s
-                LIMIT 1
-                """,
-                (row_id,),
-            )
-            row = cur.fetchone()
+            row = _fetch_video_access_row(cur, row_id)
     if row:
         return _row_to_video_access(row)
     return {
@@ -1442,10 +1492,113 @@ def create_video_access_request(
         "certificate_number": str(certificate_number or "").strip(),
         "visitor_name": str(visitor_name or "").strip(),
         "organisation": str(organisation or "").strip(),
-        "email": str(email or "").strip().lower(),
+        "email": email_l,
         "location": str(location or "").strip(),
+        "status": "pending",
         "expires_at": expires_sql,
     }
+
+
+def _fetch_video_access_row(cur, row_id: int):
+    cur.execute(
+        """
+        SELECT id, token, uid, certificate_number, visitor_name, organisation, email, location,
+               status, approved_at, expires_at, created_at
+        FROM video_access_requests
+        WHERE id = %s
+        LIMIT 1
+        """,
+        (row_id,),
+    )
+    return cur.fetchone()
+
+
+def get_pending_video_access_request(uid: str, email: str) -> dict | None:
+    uid = str(uid or "").strip()
+    email_l = str(email or "").strip().lower()
+    if not uid or not email_l:
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, token, uid, certificate_number, visitor_name, organisation, email, location,
+                       status, approved_at, expires_at, created_at
+                FROM video_access_requests
+                WHERE LOWER(uid) = LOWER(%s) AND LOWER(email) = LOWER(%s) AND status = 'pending'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (uid, email_l),
+            )
+            row = cur.fetchone()
+    return _row_to_video_access(row) if row else None
+
+
+def get_video_access_request_by_id(request_id: int) -> dict | None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            row = _fetch_video_access_row(cur, int(request_id))
+    return _row_to_video_access(row) if row else None
+
+
+def get_latest_video_access_for_visitor(uid: str, email: str) -> dict | None:
+    uid = str(uid or "").strip()
+    email_l = str(email or "").strip().lower()
+    if not uid or not email_l:
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, token, uid, certificate_number, visitor_name, organisation, email, location,
+                       status, approved_at, expires_at, created_at
+                FROM video_access_requests
+                WHERE LOWER(uid) = LOWER(%s) AND LOWER(email) = LOWER(%s)
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (uid, email_l),
+            )
+            row = cur.fetchone()
+    return _row_to_video_access(row) if row else None
+
+
+def approve_video_access_request(request_id: int, hours: int = 24) -> dict | None:
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=max(1, int(hours)))
+    expires_sql = expires_at.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    approved_sql = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE video_access_requests
+                SET status = 'approved', approved_at = %s, expires_at = %s
+                WHERE id = %s AND status = 'pending'
+                """,
+                (approved_sql, expires_sql, int(request_id)),
+            )
+            if cur.rowcount < 1:
+                return None
+            row = _fetch_video_access_row(cur, int(request_id))
+    return _row_to_video_access(row) if row else None
+
+
+def reject_video_access_request(request_id: int) -> dict | None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE video_access_requests
+                SET status = 'rejected'
+                WHERE id = %s AND status = 'pending'
+                """,
+                (int(request_id),),
+            )
+            if cur.rowcount < 1:
+                return None
+            row = _fetch_video_access_row(cur, int(request_id))
+    return _row_to_video_access(row) if row else None
 
 
 def get_valid_video_access(token: str, uid: str) -> dict | None:
@@ -1459,15 +1612,158 @@ def get_valid_video_access(token: str, uid: str) -> dict | None:
             cur.execute(
                 """
                 SELECT id, token, uid, certificate_number, visitor_name, organisation, email, location,
-                       expires_at, created_at
+                       status, approved_at, expires_at, created_at
                 FROM video_access_requests
-                WHERE token = %s AND LOWER(uid) = LOWER(%s) AND expires_at > %s
+                WHERE token = %s AND LOWER(uid) = LOWER(%s) AND status = 'approved' AND expires_at > %s
                 LIMIT 1
                 """,
                 (token, uid, now_sql),
             )
             row = cur.fetchone()
     return _row_to_video_access(row) if row else None
+
+
+def grant_paid_verify_unlock(
+    *,
+    uid: str,
+    certificate_number: str,
+    email: str,
+    token: str,
+    days: int = 365,
+) -> dict:
+    """Create an already-approved access token after successful Razorpay payment."""
+    uid = str(uid or "").strip()
+    email_l = str(email or "").strip().lower() or "payer@verify.unlock"
+    expires_at = datetime.now(timezone.utc) + timedelta(days=max(1, int(days)))
+    expires_sql = expires_at.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    approved_sql = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    payload = (
+        token,
+        uid,
+        str(certificate_number or "").strip(),
+        "Verify unlock",
+        "Razorpay",
+        email_l,
+        "Paid unlock",
+        "approved",
+        approved_sql,
+        expires_sql,
+    )
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO video_access_requests (
+                    token, uid, certificate_number, visitor_name, organisation, email, location,
+                    status, approved_at, expires_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                payload,
+            )
+            row_id = cur.lastrowid
+            row = _fetch_video_access_row(cur, row_id)
+    if row:
+        return _row_to_video_access(row)
+    return {
+        "id": row_id,
+        "token": token,
+        "uid": uid,
+        "certificate_number": str(certificate_number or "").strip(),
+        "email": email_l,
+        "status": "approved",
+        "expires_at": expires_sql,
+    }
+
+
+def create_verify_unlock_payment(
+    *,
+    order_id: str,
+    uid: str,
+    certificate_number: str,
+    email: str,
+    amount: int,
+    currency: str,
+) -> dict:
+    payload = (
+        str(order_id or "").strip(),
+        str(uid or "").strip(),
+        str(certificate_number or "").strip(),
+        str(email or "").strip().lower(),
+        int(amount),
+        str(currency or "USD").strip().upper(),
+        "created",
+    )
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO verify_unlock_payments (
+                    order_id, uid, certificate_number, email, amount, currency, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                payload,
+            )
+            row_id = cur.lastrowid
+            cur.execute(
+                """
+                SELECT id, order_id, payment_id, uid, certificate_number, email, amount, currency,
+                       status, access_token, created_at
+                FROM verify_unlock_payments WHERE id = %s LIMIT 1
+                """,
+                (row_id,),
+            )
+            row = cur.fetchone()
+    return dict(row) if row else {
+        "id": row_id,
+        "order_id": payload[0],
+        "uid": payload[1],
+        "status": "created",
+    }
+
+
+def get_verify_unlock_payment_by_order(order_id: str) -> dict | None:
+    order_id = str(order_id or "").strip()
+    if not order_id:
+        return None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, order_id, payment_id, uid, certificate_number, email, amount, currency,
+                       status, access_token, created_at
+                FROM verify_unlock_payments
+                WHERE order_id = %s
+                LIMIT 1
+                """,
+                (order_id,),
+            )
+            row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def mark_verify_unlock_paid(
+    *,
+    order_id: str,
+    payment_id: str,
+    access_token: str,
+) -> dict | None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE verify_unlock_payments
+                SET payment_id = %s, status = 'paid', access_token = %s
+                WHERE order_id = %s AND status IN ('created', 'paid')
+                """,
+                (
+                    str(payment_id or "").strip(),
+                    str(access_token or "").strip(),
+                    str(order_id or "").strip(),
+                ),
+            )
+            if cur.rowcount < 1:
+                return None
+    return get_verify_unlock_payment_by_order(order_id)
 
 
 def list_video_access_requests(limit: int = 200) -> list[dict]:
@@ -1477,7 +1773,7 @@ def list_video_access_requests(limit: int = 200) -> list[dict]:
             cur.execute(
                 """
                 SELECT id, token, uid, certificate_number, visitor_name, organisation, email, location,
-                       expires_at, created_at
+                       status, approved_at, expires_at, created_at
                 FROM video_access_requests
                 ORDER BY id DESC
                 LIMIT %s

@@ -4,13 +4,15 @@ import { ArrowRight } from 'lucide-react'
 import { api } from '../api/client'
 import { useApp } from '../context/AppContext'
 
-const LOGIN_LOGO = '/static/images/sft-login-logo.png?v=2'
+const LOGIN_LOGO = '/static/images/sft-login-logo.png?v=3'
 
 export function InstituteLoginPage() {
   const { config } = useApp()
   const navigate = useNavigate()
   const [uid, setUid] = useState('')
   const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [passwordRequired, setPasswordRequired] = useState(false)
   const [loading, setLoading] = useState(false)
   const [checking, setChecking] = useState(true)
   const [error, setError] = useState('')
@@ -22,6 +24,7 @@ export function InstituteLoginPage() {
     api
       .adminStatus()
       .then((s) => {
+        setPasswordRequired(Boolean(s.passwordRequired))
         if (s.authenticated) navigate('/home', { replace: true })
       })
       .catch(() => {})
@@ -31,10 +34,11 @@ export function InstituteLoginPage() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!uid.trim() || !email.trim()) return
+    if (passwordRequired && !password) return
     setLoading(true)
     setError('')
     try {
-      await api.adminLogin(uid.trim(), email.trim())
+      await api.adminLogin(uid.trim(), email.trim(), password)
       navigate('/home', { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Institute login failed')
@@ -55,13 +59,16 @@ export function InstituteLoginPage() {
           <div className="mb-5 shrink-0 text-center text-white">
             <img
               src={LOGIN_LOGO}
-              alt="Sustainable Futures Trainings"
-              className="mx-auto h-[clamp(5.5rem,28vw,7.5rem)] w-[clamp(5.5rem,28vw,7.5rem)] rounded-2xl object-contain"
+              alt="Sustainable Futuristic Trainings"
+              className="mx-auto h-[clamp(9rem,42vw,12rem)] w-[clamp(9rem,42vw,12rem)] object-contain"
             />
-            <h1 className="mt-4 font-display text-[clamp(0.95rem,4.2vw,1.15rem)] font-bold leading-snug">
-              {brand?.name ?? 'SFT Global Skill Assessment Council'}
+            <p className="mt-3 text-[clamp(0.78rem,3.4vw,0.92rem)] font-semibold uppercase tracking-[0.08em] text-white/85">
+              Sustainable Futuristic Trainings LLC
+            </p>
+            <h1 className="mt-1.5 font-display text-[clamp(0.95rem,4vw,1.15rem)] font-bold leading-snug text-white">
+              Global Skill Assessment Council
             </h1>
-            <p className="mt-1.5 text-xs tracking-wide text-white/70">
+            <p className="mt-1 text-xs tracking-wide text-white/65">
               {brand?.tagline ?? 'Assessing Skills. Validating Competence.'}
             </p>
           </div>
@@ -99,11 +106,25 @@ export function InstituteLoginPage() {
                 inputMode="email"
               />
             </label>
+            {passwordRequired && (
+              <label className="mt-3.5 block">
+                <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-white/55">
+                  Password
+                </span>
+                <input
+                  type="password"
+                  className="w-full rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-base text-white outline-none placeholder:text-white/35 focus:border-accent-400 focus:ring-2 focus:ring-accent-400/30"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </label>
+            )}
             {error && <p className="mt-2 text-xs text-red-300">{error}</p>}
             <button
               type="submit"
               className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-accent-400 px-6 py-3.5 text-sm font-semibold text-brand-950 shadow-lg shadow-black/30 transition active:scale-[0.98] disabled:opacity-50"
-              disabled={loading || !uid.trim() || !email.trim()}
+              disabled={loading || !uid.trim() || !email.trim() || (passwordRequired && !password)}
             >
               {loading ? 'Signing in…' : 'Institute login'}
               {!loading && <ArrowRight size={16} />}
@@ -111,7 +132,7 @@ export function InstituteLoginPage() {
           </form>
 
           <p className="mt-auto pt-6 text-center text-[0.65rem] text-white/45">
-            Powered by {brand?.powered_by ?? 'SFT Global Trade Assessment Authority'}
+            Powered by {brand?.powered_by ?? 'Sustainable Futuristic Trainings LLC'}
           </p>
         </div>
       </div>

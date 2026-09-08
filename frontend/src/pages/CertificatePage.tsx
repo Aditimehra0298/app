@@ -78,7 +78,10 @@ export function CertificatePage() {
         const res = await fetch(cert.pdfUrl, { credentials: 'same-origin' })
         if (res.ok) {
           const blob = await res.blob()
-          const file = new File([blob], 'SFT-certificate.pdf', { type: 'application/pdf' })
+          const fileName =
+            cert.downloadFilename ||
+            `${(cert.candidateName || student?.name || 'Candidate').replace(/[^\w\s-]+/g, '').replace(/[\s_-]+/g, '_')}_${(cert.courseName || student?.course_name || 'Certificate').replace(/[^\w\s-]+/g, '').replace(/[\s_-]+/g, '_')}.pdf`
+          const file = new File([blob], fileName, { type: 'application/pdf' })
           if (navigator.canShare({ files: [file] })) {
             await navigator.share({ title, text, files: [file] })
             return
@@ -122,7 +125,7 @@ export function CertificatePage() {
             <Clock className="mx-auto mb-2 text-amber-600" size={28} />
             <p className="font-display text-base font-bold text-brand-900">Trainer is checking your videos</p>
             <p className="mt-1 text-sm text-slate-600">
-              Your pathway videos and 2-minute practical are submitted. After the trainer verifies them,
+              Your 2-minute practical is submitted. Week videos are optional. After the trainer verifies the practical,
               you can download the certificate and scan the QR to prove it.
             </p>
           </div>

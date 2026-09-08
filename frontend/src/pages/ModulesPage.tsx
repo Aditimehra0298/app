@@ -19,7 +19,9 @@ export function ModulesPage() {
   const step =
     trainingSteps.find((s) => s.id === requestedId) ||
     trainingSteps.find((s) => s.id === redoId) ||
-    trainingSteps[stepIndex]
+    trainingSteps.find((s) => !(progress?.progress?.completed_steps ?? []).includes(s.id)) ||
+    trainingSteps[stepIndex] ||
+    trainingSteps[0]
   const v = useVideoRecorder({
     resetKey: step?.id,
     minSeconds: VIDEO_MIN_SECONDS,
@@ -30,7 +32,6 @@ export function ModulesPage() {
   useEffect(() => {
     if (progress?.phase === 'registration') navigate('/')
     if ((progress?.reupload_steps ?? []).length) return
-    if (progress?.phase === 'assessment') navigate('/assessment')
     if (progress?.phase === 'certificate') navigate('/certificate')
   }, [progress, navigate])
 
@@ -47,9 +48,10 @@ export function ModulesPage() {
     try {
       const res = await api.uploadStep(step.id, fd)
       await refreshProgress()
-      if (res.all_steps_done) navigate('/assessment')
-      else {
-        v.reset()
+      v.reset()
+      if (res.all_steps_done) {
+        navigate('/assessment')
+      } else {
         navigate('/home')
       }
     } catch (e) {
@@ -65,7 +67,7 @@ export function ModulesPage() {
         <img src={step.image} alt="" className="h-full w-full object-cover" />
         <div className="gradient-hero absolute inset-0 flex flex-col justify-end p-4">
           <span className="mb-1 w-fit rounded-full bg-white/15 px-2.5 py-0.5 text-[0.6rem] font-bold uppercase tracking-wider text-white">
-            Module {step.id} of {config.steps.length}
+            Optional · Module {step.id}
           </span>
           <h2 className="font-display text-lg font-bold text-white">{step.title}</h2>
         </div>
@@ -170,9 +172,16 @@ export function ModulesPage() {
         )}
       </div>
 
-      <div className="sticky bottom-0 border-t border-slate-100 bg-slate-50/95 p-4 backdrop-blur">
+      <div className="sticky bottom-0 space-y-2 border-t border-slate-100 bg-slate-50/95 p-4 backdrop-blur">
         <button className="btn-primary" disabled={!v.canSubmit || uploading} onClick={() => void submit()}>
           {uploading ? 'Uploading…' : 'Submit Module Evidence'}
+        </button>
+        <button
+          type="button"
+          className="w-full rounded-xl border border-slate-200 bg-white py-3 text-sm font-semibold text-brand-900"
+          onClick={() => navigate('/assessment')}
+        >
+          Skip to required practical →
         </button>
       </div>
     </div>

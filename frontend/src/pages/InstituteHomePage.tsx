@@ -16,7 +16,6 @@ import { api } from '../api/client'
 import { InstituteTabBar } from '../components/InstituteTabBar'
 import { useApp } from '../context/AppContext'
 import { LogoutButton } from '../components/LogoutButton'
-import { OrgLogo } from '../components/OrgLogo'
 import type { InstituteCourse } from '../types'
 
 interface StepDraft {
@@ -25,6 +24,7 @@ interface StepDraft {
 }
 
 const EUROTECH_LOGO = '/static/images/eurotech-logo.png'
+const SF_HOME_LOGO = '/static/images/sft-home-logo.png?v=3'
 
 function formatBatchDate(iso: string) {
   if (!iso) return ''
@@ -38,7 +38,6 @@ export function InstituteHomePage() {
   const { config } = useApp()
   const heroImage = config?.images.splash ?? '/static/images/splash-forest.jpg'
   const [checking, setChecking] = useState(true)
-  const [profileOpen, setProfileOpen] = useState(false)
   const [instituteName, setInstituteName] = useState('Eurotech')
   const [instituteUid, setInstituteUid] = useState('21EUROTECH001')
   const [courses, setCourses] = useState<InstituteCourse[]>([])
@@ -156,7 +155,7 @@ export function InstituteHomePage() {
     return (
       <div className="app-frame flex items-center justify-center bg-slate-50 text-sm text-slate-400">
         <div className="flex flex-col items-center gap-3">
-          <OrgLogo alt="" className="h-14 w-14 animate-pulse object-contain" />
+          <img src={SF_HOME_LOGO} alt="" className="h-14 w-14 animate-pulse object-contain" />
           <span>Loading…</span>
         </div>
       </div>
@@ -188,9 +187,10 @@ export function InstituteHomePage() {
           <div className="relative z-10 flex min-h-[clamp(18rem,42vh,24rem)] flex-col px-[var(--pad-x)] pb-5 pt-[max(env(safe-area-inset-top),0.75rem)]">
             <div className="mb-2 flex items-start justify-between gap-3">
               <div className="flex min-w-0 items-center gap-2.5">
-                <OrgLogo
-                  alt={config?.brand.short_name ?? 'SFT'}
-                  className="h-11 w-11 shrink-0 object-contain"
+                <img
+                  src={SF_HOME_LOGO}
+                  alt="Sustainable Futuristic Trainings"
+                  className="h-12 w-12 shrink-0 object-contain"
                 />
                 <div className="min-w-0">
                   <p className="truncate font-display text-sm font-bold leading-tight text-white">{instituteName}</p>
@@ -200,9 +200,9 @@ export function InstituteHomePage() {
               <div className="flex shrink-0 items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setProfileOpen(true)}
+                  onClick={() => navigate('/institute-profile')}
                   className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl bg-white p-1 ring-1 ring-white/40 shadow-md active:scale-95"
-                  aria-label="Open institute profile"
+                  aria-label="Open Eurotech profile"
                 >
                   <img
                     src={EUROTECH_LOGO}
@@ -216,12 +216,20 @@ export function InstituteHomePage() {
 
             <div className="flex flex-1 items-center justify-center px-3 py-3">
               <div className="max-w-[21rem] rounded-3xl bg-black/30 px-5 py-4 text-center ring-1 ring-white/10 backdrop-blur-sm">
-              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-accent-400">
-                Training Management Portal
+              <img
+                src={SF_HOME_LOGO}
+                alt="Sustainable Futuristic Trainings"
+                className="mx-auto mb-3 h-[clamp(5.5rem,28vw,7.5rem)] w-[clamp(5.5rem,28vw,7.5rem)] object-contain"
+              />
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-white/85">
+                Sustainable Futuristic Trainings LLC
               </p>
-              <h1 className="mt-2 font-display text-[clamp(1.1rem,5vw,1.55rem)] font-bold leading-snug tracking-tight text-white">
-                {config?.brand.name ?? 'SFT Global Skill Assessment Council'}
+              <h1 className="mt-1.5 font-display text-[clamp(1.05rem,4.8vw,1.4rem)] font-bold leading-snug tracking-tight text-white">
+                Global Skill Assessment Council
               </h1>
+              <p className="mt-2 text-xs tracking-wide text-white/65">
+                {config?.brand?.tagline ?? 'Assessing Skills. Validating Competence.'}
+              </p>
               <p className="mt-2 text-[0.78rem] leading-relaxed text-white/80">
                 Create trainings, manage batches, and issue verified certificates from one place.
               </p>
@@ -368,61 +376,6 @@ export function InstituteHomePage() {
       </div>
 
       <InstituteTabBar active="home" onCourseClick={openWizard} />
-
-      {profileOpen && (
-        <div className="absolute inset-0 z-40 flex items-end bg-brand-950/45 backdrop-blur-[2px]">
-          <button
-            type="button"
-            className="absolute inset-0"
-            aria-label="Close institute profile"
-            onClick={() => setProfileOpen(false)}
-          />
-          <div className="relative w-full rounded-t-[1.75rem] bg-white px-5 pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-4 shadow-2xl">
-            <div className="mb-4 flex items-start justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-2xl bg-slate-50 p-1 ring-1 ring-slate-100">
-                  <img
-                    src={EUROTECH_LOGO}
-                    alt="Eurotech Assessment and Certification Services"
-                    className="h-full w-full object-contain"
-                  />
-                </div>
-                <div>
-                  <p className="font-display text-base font-bold text-brand-950">{instituteName}</p>
-                  <p className="text-[0.7rem] uppercase tracking-[0.12em] text-slate-400">{instituteUid}</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setProfileOpen(false)}
-                className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 active:scale-95"
-                aria-label="Close"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100">
-                <p className="text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-slate-400">Institute</p>
-                <p className="mt-1.5 text-sm font-bold text-brand-950">{instituteName}</p>
-              </div>
-              <div className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100">
-                <p className="text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-slate-400">UID</p>
-                <p className="mt-1.5 text-sm font-bold text-brand-950">{instituteUid}</p>
-              </div>
-              <div className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100">
-                <p className="text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-slate-400">Courses</p>
-                <p className="mt-1.5 text-sm font-bold text-brand-950">{totalCourses}</p>
-              </div>
-              <div className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100">
-                <p className="text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-slate-400">Council</p>
-                <p className="mt-1.5 text-sm font-bold text-brand-950">{config?.brand.short_name ?? 'SFT'}</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ══════════════════════════════════════════════════
           CREATE TRAINING WIZARD (full-screen overlay)

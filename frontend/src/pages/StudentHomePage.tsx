@@ -8,14 +8,16 @@ import { OrgLogo } from '../components/OrgLogo'
 import type { Student, TrainingStep } from '../types'
 
 function stepStatus(
-  stepIndex: number,
-  stepId: number,
+  step: TrainingStep,
   completedSteps: number[],
-  currentIndex: number,
+  assessmentDone: boolean,
 ): 'done' | 'current' | 'locked' {
-  if (completedSteps.includes(stepId)) return 'done'
-  if (stepIndex === currentIndex) return 'current'
-  return 'locked'
+  if (step.kind === 'practical') {
+    return assessmentDone ? 'done' : 'current'
+  }
+  if (completedSteps.includes(step.id)) return 'done'
+  // Pathway videos are optional — never locked.
+  return 'current'
 }
 
 export function StudentHomePage() {
@@ -25,7 +27,6 @@ export function StudentHomePage() {
 
   const p = progress?.progress
   const completed = p?.completed_steps ?? []
-  const currentIndex = progress?.completed_count ?? 0
   const steps = config?.steps ?? []
 
   const reuploadSteps = progress?.reupload_steps ?? []
@@ -38,7 +39,7 @@ export function StudentHomePage() {
       navigate('/assessment')
       return
     }
-    navigate(needsRedo ? `/modules?step=${step.id}` : '/modules')
+    navigate(`/modules?step=${step.id}`)
   }
 
   useEffect(() => {
@@ -130,17 +131,16 @@ export function StudentHomePage() {
           </div>
 
           <ul className="space-y-3">
-            {steps.map((step, stepIndex) => {
+            {steps.map((step) => {
               const needsRedo =
                 step.kind === 'practical' ? practicalRedo : reuploadSteps.includes(step.id)
               const status = needsRedo
                 ? 'current'
-                : step.kind === 'practical' && progress?.assessment_done
-                  ? 'done'
-                  : stepStatus(stepIndex, step.id, completed, currentIndex)
+                : stepStatus(step, completed, Boolean(progress?.assessment_done))
               const isCurrent = status === 'current'
               const isDone = status === 'done'
               const isLocked = status === 'locked'
+              const isOptional = step.kind !== 'practical'
 
               return (
                 <li key={step.id}>
@@ -167,6 +167,7 @@ export function StudentHomePage() {
                     <div className="min-w-0 flex-1 py-3 pr-2">
                       <p className="text-[0.6rem] font-bold uppercase tracking-wider text-slate-400">
                         Step {step.id}
+                        {isOptional ? ' · Optional' : ' · Required'}
                       </p>
                       <p className="font-display text-sm font-bold text-brand-900">{step.title}</p>
                       <p className="mt-0.5 line-clamp-2 text-[0.7rem] leading-snug text-slate-500">
@@ -178,8 +179,13 @@ export function StudentHomePage() {
                           {needsRedo
                             ? 'Trainer asked to re-upload'
                             : step.kind === 'practical'
-                              ? 'Tap for 2-min assessment'
-                              : 'Tap to record video'}
+                              ? 'Required · tap for 2-min assessment'
+                              : 'Optional · tap to upload'}
+                        </span>
+                      )}
+                      {isOptional && !isDone && !needsRedo && !isCurrent && (
+                        <span className="mt-1.5 inline-block text-[0.65rem] font-semibold text-slate-400">
+                          Optional — you can skip to practical
                         </span>
                       )}
                     </div>

@@ -20,7 +20,6 @@ export function AssessmentPage() {
 
   useEffect(() => {
     if (progress?.phase === 'registration') navigate('/')
-    if (progress?.phase === 'training' && !progress.practical_reupload) navigate('/home')
     if (progress?.phase === 'certificate' && !progress.practical_reupload) navigate('/certificate')
   }, [progress, navigate])
 
@@ -51,7 +50,7 @@ export function AssessmentPage() {
         <img src={config.images.assessment} alt="" className="h-full w-full object-cover" />
         <div className="gradient-hero absolute inset-0 flex flex-col justify-end p-4">
           <span className="mb-1 w-fit rounded-full bg-teal-500/30 px-2.5 py-0.5 text-[0.6rem] font-bold uppercase text-white">
-            Final practical
+            Final practical · Required
           </span>
           <h2 className="font-display text-lg font-bold text-white">{config.assessmentTitle}</h2>
         </div>

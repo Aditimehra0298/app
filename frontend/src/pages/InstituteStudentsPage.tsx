@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChevronRight, Lock, Users } from 'lucide-react'
+import { Check, ChevronRight, Lock, Users, X } from 'lucide-react'
 import { api } from '../api/client'
 import { InstituteTabBar } from '../components/InstituteTabBar'
 import { LogoutButton } from '../components/LogoutButton'
@@ -21,7 +21,9 @@ type VideoAccessRequest = {
   organisation: string
   email: string
   location: string
+  status?: string
   createdAt?: string
+  approvedAt?: string
 }
 
 function formatBatchDate(iso: string) {
@@ -31,11 +33,20 @@ function formatBatchDate(iso: string) {
   return `${d}-${m}-${y}`
 }
 
+function statusLabel(status?: string) {
+  const value = String(status || 'pending').toLowerCase()
+  if (value === 'approved') return 'Approved'
+  if (value === 'rejected') return 'Rejected'
+  return 'Pending'
+}
+
 export function InstituteStudentsPage() {
   const navigate = useNavigate()
   const [checking, setChecking] = useState(true)
   const [students, setStudents] = useState<StudentListItem[]>([])
   const [accessRequests, setAccessRequests] = useState<VideoAccessRequest[]>([])
+  const [busyId, setBusyId] = useState<number | null>(null)
+  const [message, setMessage] = useState('')
 
   const loadStudents = useCallback(async () => {
     const coursesRes = await api.adminListCourses()
@@ -70,6 +81,34 @@ export function InstituteStudentsPage() {
       .finally(() => setChecking(false))
   }, [loadAccessRequests, loadStudents, navigate])
 
+  const approveRequest = async (req: VideoAccessRequest) => {
+    setBusyId(req.id)
+    setMessage('')
+    try {
+      const res = await api.adminApproveVideoAccess(req.id)
+      setMessage(res.message || `Approved access for ${req.name}`)
+      await loadAccessRequests()
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Could not approve request')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const rejectRequest = async (req: VideoAccessRequest) => {
+    setBusyId(req.id)
+    setMessage('')
+    try {
+      const res = await api.adminRejectVideoAccess(req.id)
+      setMessage(res.message || `Rejected request from ${req.name}`)
+      await loadAccessRequests()
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Could not reject request')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   if (checking) {
     return (
       <div className="app-frame flex items-center justify-center bg-slate-50 text-sm text-slate-400">
@@ -77,6 +116,8 @@ export function InstituteStudentsPage() {
       </div>
     )
   }
+
+  const pendingCount = accessRequests.filter((r) => (r.status || 'pending') === 'pending').length
 
   return (
     <div className="app-frame bg-slate-50">
@@ -141,27 +182,66 @@ export function InstituteStudentsPage() {
           <div className="mb-3 flex items-center gap-2">
             <Lock size={16} className="text-brand-900" />
             <p className="font-display text-sm font-bold text-brand-950">
-              Video access requests ({accessRequests.length})
+              Video access requests ({pendingCount} pending)
             </p>
           </div>
           <p className="mb-3 text-[0.72rem] text-slate-500">
-            All name, organisation, email, and location entries from the verify lock form are saved here.
+            Visitors submit this form on the verify website. Approve to unlock training videos for them.
           </p>
+          {message && <p className="mb-3 text-[0.72rem] font-medium text-brand-800">{message}</p>}
           <div className="space-y-2">
             {accessRequests.length ? (
-              accessRequests.map((req) => (
-                <div key={req.id} className="rounded-xl bg-slate-50 px-3 py-2.5 ring-1 ring-slate-100">
-                  <p className="text-sm font-semibold text-brand-950">{req.name}</p>
-                  <p className="mt-0.5 text-[0.72rem] text-slate-600">{req.organisation}</p>
-                  <p className="mt-0.5 text-[0.72rem] text-slate-500">{req.email}</p>
-                  <p className="mt-0.5 text-[0.72rem] text-slate-500">{req.location}</p>
-                  <p className="mt-1 text-[0.65rem] text-slate-400">
-                    Student {req.uid}
-                    {req.certificateNumber ? ` · ${req.certificateNumber}` : ''}
-                    {req.createdAt ? ` · ${req.createdAt}` : ''}
-                  </p>
-                </div>
-              ))
+              accessRequests.map((req) => {
+                const pending = (req.status || 'pending') === 'pending'
+                return (
+                  <div key={req.id} className="rounded-xl bg-slate-50 px-3 py-2.5 ring-1 ring-slate-100">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm font-semibold text-brand-950">{req.name}</p>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[0.62rem] font-bold uppercase ${
+                          req.status === 'approved'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : req.status === 'rejected'
+                              ? 'bg-red-100 text-red-700'
+                              : 'bg-amber-100 text-amber-800'
+                        }`}
+                      >
+                        {statusLabel(req.status)}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-[0.72rem] text-slate-600">{req.organisation}</p>
+                    <p className="mt-0.5 text-[0.72rem] text-slate-500">{req.email}</p>
+                    <p className="mt-0.5 text-[0.72rem] text-slate-500">{req.location}</p>
+                    <p className="mt-1 text-[0.65rem] text-slate-400">
+                      Student {req.uid}
+                      {req.certificateNumber ? ` · ${req.certificateNumber}` : ''}
+                      {req.createdAt ? ` · ${req.createdAt}` : ''}
+                    </p>
+                    {pending && (
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          type="button"
+                          disabled={busyId === req.id}
+                          onClick={() => approveRequest(req)}
+                          className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-brand-950 px-3 py-2 text-[0.72rem] font-semibold text-white disabled:opacity-50"
+                        >
+                          <Check size={14} />
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busyId === req.id}
+                          onClick={() => rejectRequest(req)}
+                          className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[0.72rem] font-semibold text-slate-600 disabled:opacity-50"
+                        >
+                          <X size={14} />
+                          Reject
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )
+              })
             ) : (
               <p className="text-sm text-slate-500">No video access forms submitted yet.</p>
             )}

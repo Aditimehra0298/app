@@ -20,6 +20,8 @@ export interface Student {
   videos?: VerifyVideoProof[]
   assessment_recorded?: boolean
   certificate_recorded?: boolean
+  certificate_pdf_ready?: boolean
+  certificate_needs_regeneration?: boolean
   trainer_verified?: boolean
   trainer_score?: number | null
   week_scores?: Record<string, number>
@@ -32,6 +34,7 @@ export interface Student {
 export interface Brand {
   name: string
   short_name: string
+  organization?: string
   tagline: string
   powered_by: string
   theme_color: string
@@ -153,6 +156,24 @@ export interface VerifyResult {
   cert?: Record<string, string>
   pdfUrl?: string | null
   downloadUrl?: string | null
+  pdfReady?: boolean
+  unlock?: {
+    required?: boolean
+    unlocked?: boolean
+    amount?: number
+    currency?: string
+    label?: string
+    razorpayKeyId?: string | null
+    configured?: boolean
+    options?: Array<{
+      region?: string
+      currency?: string
+      amount?: number
+      label?: string
+      title?: string
+      methods?: string
+    }>
+  }
   videos?: VerifyVideoProof[]
   videosComplete?: boolean
   uploadedSteps?: number
@@ -170,6 +191,7 @@ export interface CertificateResult {
   filename?: string
   pdfUrl?: string
   downloadUrl?: string
+  downloadFilename?: string
   verifyUrl?: string
   qrUrl?: string
   candidateName?: string

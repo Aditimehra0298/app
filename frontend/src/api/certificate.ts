@@ -124,11 +124,16 @@ export function buildCertificatePayload(
 export interface RemoteCertificateResult {
   success: boolean
   pdfUrl: string
+  downloadUrl?: string
+  downloadFilename?: string
   filename: string
   certificateId: string
   templateFile?: string
   courseName?: string
   error?: string
+  emailSent?: boolean
+  emailDetail?: string
+  email?: string
 }
 
 export async function generateCertificatePdf(
