@@ -122,23 +122,23 @@ RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "").strip()
 # National (India): INR unlock — UPI / cards / netbanking / wallets
 VERIFY_UNLOCK_INR_AMOUNT = int(
     os.environ.get("VERIFY_UNLOCK_INR_AMOUNT")
-    or os.environ.get("VERIFY_UNLOCK_AMOUNT", "85000")
-    or "85000"
+    or os.environ.get("VERIFY_UNLOCK_AMOUNT", "42500")
+    or "42500"
 )
 VERIFY_UNLOCK_INR_LABEL = (
-    os.environ.get("VERIFY_UNLOCK_INR_LABEL", "$10").strip() or "$10"
+    os.environ.get("VERIFY_UNLOCK_INR_LABEL", "$5").strip() or "$5"
 )
 # International: USD unlock — cards / international methods
-VERIFY_UNLOCK_USD_AMOUNT = int(os.environ.get("VERIFY_UNLOCK_USD_AMOUNT", "1000") or "1000")
+VERIFY_UNLOCK_USD_AMOUNT = int(os.environ.get("VERIFY_UNLOCK_USD_AMOUNT", "500") or "500")
 VERIFY_UNLOCK_USD_LABEL = (
-    os.environ.get("VERIFY_UNLOCK_USD_LABEL", "$10").strip() or "$10"
+    os.environ.get("VERIFY_UNLOCK_USD_LABEL", "$5").strip() or "$5"
 )
 # Single public label shown on verify (one price in dollars for everyone)
 VERIFY_UNLOCK_AMOUNT = int(
     os.environ.get("VERIFY_UNLOCK_AMOUNT", str(VERIFY_UNLOCK_INR_AMOUNT)) or str(VERIFY_UNLOCK_INR_AMOUNT)
 )
 VERIFY_UNLOCK_CURRENCY = (os.environ.get("VERIFY_UNLOCK_CURRENCY", "INR") or "INR").strip().upper()
-VERIFY_UNLOCK_LABEL = os.environ.get("VERIFY_UNLOCK_LABEL", "$10").strip() or "$10"
+VERIFY_UNLOCK_LABEL = os.environ.get("VERIFY_UNLOCK_LABEL", "$5").strip() or "$5"
 VERIFY_UNLOCK_DAYS = int(os.environ.get("VERIFY_UNLOCK_DAYS", "365") or "365")
 CERTIFICATE_API_URL = (
     os.environ.get("CERTIFICATE_API_URL")
@@ -1991,7 +1991,7 @@ def _unlock_payload_for_token(uid: str, token: str, cert_no: str) -> dict:
 
 
 def _unlock_region_pricing(region: str | None = None, currency: str | None = None) -> dict:
-    """Single $10 unlock for everyone. Charge INR so Indian + international cards / UPI work."""
+    """Single $5 unlock for everyone. Charge INR so Indian + international cards / UPI work."""
     _ = region, currency  # kept for API compatibility; one pricing for all
     return {
         "region": "global",

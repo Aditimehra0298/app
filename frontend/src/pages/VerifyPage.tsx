@@ -89,7 +89,7 @@ function fromLmsPayload(res: Awaited<ReturnType<typeof api.verifyCertificate>>):
           unlocked: Boolean(unlock.unlocked),
           amount: unlock.amount,
           currency: unlock.currency,
-          label: unlock.label || '$10',
+          label: unlock.label || '$5',
           razorpayKeyId: unlock.razorpayKeyId,
           configured: Boolean(unlock.configured),
           options: unlock.options,
@@ -317,7 +317,7 @@ export function VerifyPage() {
   const photo = (student as Student | undefined)?.image_path || '/static/icons/icon-192.png'
   const videos = (videosUnlocked && unlockedVideos ? unlockedVideos : data?.videos) ?? []
   const showLanding = !data?.found
-  const unlockLabel = data?.unlock?.label || '$10'
+  const unlockLabel = data?.unlock?.label || '$5'
   const activeDownloadUrl = downloadUrl || data?.downloadUrl || data?.pdfUrl || null
 
   const applyUnlock = (payload: {
@@ -390,7 +390,7 @@ export function VerifyPage() {
           display: {
             blocks: {
               all: {
-                name: 'Pay $10',
+                name: `Pay ${unlockLabel}`,
                 instruments: [
                   { method: 'upi' },
                   { method: 'card' },
