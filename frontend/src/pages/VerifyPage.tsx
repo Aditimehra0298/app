@@ -454,7 +454,7 @@ export function VerifyPage() {
               <p className="text-[0.62rem] font-bold uppercase leading-snug tracking-[0.06em] text-emerald-950 sm:text-xs lg:text-[0.8rem]">
                 {councilName}
               </p>
-              <p className="mt-1 text-[0.72rem] font-medium leading-snug tracking-wide text-emerald-800/80 sm:text-sm">
+              <p className="mt-1 text-[0.58rem] font-normal italic leading-snug tracking-wide text-emerald-800/70 sm:text-[0.65rem]">
                 {tagline}
               </p>
             </div>
@@ -851,7 +851,9 @@ export function VerifyPage() {
               <p className="text-xs font-bold uppercase leading-snug tracking-wide text-white/95 sm:text-sm">
                 {councilName}
               </p>
-              <p className="verify-gold mt-1.5 text-sm italic">{tagline}</p>
+              <p className="verify-gold mt-1.5 text-[0.58rem] font-normal italic leading-snug tracking-wide sm:text-[0.65rem]">
+                {tagline}
+              </p>
               <p className="mt-1 text-[0.7rem] text-white/55">
                 Certified by {brand?.powered_by ?? 'Sustainable Futuristic Trainings LLC'}
               </p>

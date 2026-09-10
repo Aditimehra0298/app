@@ -68,7 +68,7 @@ export function InstituteLoginPage() {
             <p className="mt-1.5 text-[clamp(0.65rem,2.8vw,0.78rem)] font-semibold uppercase tracking-[0.08em] text-white/85">
               Sustainable Futuristic Trainings LLC
             </p>
-            <p className="login-brand-tagline mt-1 text-xs tracking-wide text-white/65">
+            <p className="login-brand-tagline mt-1 text-[0.7rem] italic tracking-wide text-white/65">
               {brand?.tagline ?? 'Assessing Skills. Validating Competence.'}
             </p>
           </div>

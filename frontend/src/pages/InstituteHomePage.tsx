@@ -227,7 +227,7 @@ export function InstituteHomePage() {
               <p className="mt-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-white/85">
                 Sustainable Futuristic Trainings LLC
               </p>
-              <p className="mt-2 text-xs tracking-wide text-white/65">
+              <p className="mt-2 text-[0.7rem] italic tracking-wide text-white/65">
                 {config?.brand?.tagline ?? 'Assessing Skills. Validating Competence.'}
               </p>
               <p className="mt-2 text-[0.78rem] leading-relaxed text-white/80">
