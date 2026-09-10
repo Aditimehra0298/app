@@ -221,17 +221,17 @@ export function InstituteHomePage() {
                 alt="Sustainable Futuristic Trainings"
                 className="mx-auto mb-3 h-[clamp(5.5rem,28vw,7.5rem)] w-[clamp(5.5rem,28vw,7.5rem)] object-contain"
               />
-              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-white/85">
-                Sustainable Futuristic Trainings LLC
-              </p>
-              <h1 className="mt-1.5 font-display text-[clamp(1.05rem,4.8vw,1.4rem)] font-bold leading-snug tracking-tight text-white">
+              <h1 className="font-display text-[clamp(1.05rem,4.8vw,1.4rem)] font-bold uppercase leading-snug tracking-tight text-white">
                 Global Skill Assessment Council
               </h1>
+              <p className="mt-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-white/85">
+                Sustainable Futuristic Trainings LLC
+              </p>
               <p className="mt-2 text-xs tracking-wide text-white/65">
                 {config?.brand?.tagline ?? 'Assessing Skills. Validating Competence.'}
               </p>
               <p className="mt-2 text-[0.78rem] leading-relaxed text-white/80">
-                Create trainings, manage batches, and issue verified certificates from one place.
+                Create trainings, manage batches, and issue verified certificates from one platform.
               </p>
               </div>
             </div>

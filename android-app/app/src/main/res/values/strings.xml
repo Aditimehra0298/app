@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">SFT</string>
-    <!-- Play Store app loads the live GCE institute app -->
+    <!-- Must match live GCE URL — WebView opens this on launch -->
     <string name="app_url">https://assessment.sftlms.com/</string>
 </resources>

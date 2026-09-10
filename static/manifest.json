@@ -1,7 +1,7 @@
 {
-  "name": "SFT Global Skill Assessment Council",
+  "name": "Global Skill Assessment Council",
   "short_name": "SFT",
-  "description": "Assessing Skills. Validating Competence.",
+  "description": "Sustainable Futuristic Trainings LLC — Assessing Skills. Validating Competence.",
   "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",

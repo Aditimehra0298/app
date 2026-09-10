@@ -310,7 +310,7 @@ body.verify-website-mode {
   @apply text-brand-900;
 }
 
-/* Keyboard open on Android/iOS: shrink shell and hide bottom nav */
+/* Keyboard open on Android/iOS: keep shell stable, free space for the field */
 body.keyboard-open .app-shell {
   height: var(--app-height);
   max-height: var(--app-height);
@@ -322,6 +322,34 @@ body.keyboard-open .institute-tab-bar {
 
 body.keyboard-open .screen-scroll {
   padding-bottom: max(env(safe-area-inset-bottom), 1rem) !important;
+}
+
+body.keyboard-open .login-scroll {
+  padding-bottom: calc(var(--keyboard-inset, 0px) + 1rem) !important;
+}
+
+body.keyboard-open .login-brand-logo {
+  height: 4.25rem !important;
+  width: 4.25rem !important;
+}
+
+body.keyboard-open .login-brand h1 {
+  font-size: 0.85rem !important;
+  margin-top: 0.35rem !important;
+}
+
+body.keyboard-open .login-brand p:not(.login-brand-tagline) {
+  font-size: 0.62rem !important;
+  margin-top: 0.25rem !important;
+}
+
+body.keyboard-open .login-brand-tagline,
+body.keyboard-open .login-scroll > p:last-child {
+  display: none !important;
+}
+
+body.keyboard-open .login-brand {
+  margin-bottom: 0.75rem !important;
 }
 
 select,

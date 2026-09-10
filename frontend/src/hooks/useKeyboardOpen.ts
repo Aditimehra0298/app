@@ -13,9 +13,10 @@ function keyboardLikelyOpen(): boolean {
   const viewport = window.visualViewport
   const layoutHeight = window.innerHeight
   const visibleHeight = Math.round(viewport?.height ?? layoutHeight)
-  const heightDelta = layoutHeight - visibleHeight
+  const offsetTop = Math.round(viewport?.offsetTop ?? 0)
+  const keyboardInset = Math.max(0, layoutHeight - visibleHeight - offsetTop)
   const focusedField = isFormField(document.activeElement)
-  return focusedField || heightDelta > 48
+  return focusedField && keyboardInset > 80
 }
 
 export function useKeyboardOpen(): boolean {

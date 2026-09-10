@@ -4428,7 +4428,7 @@ def admin_verify_student_videos(uid: str):
         return jsonify(
             {
                 "success": False,
-                "error": "Upload the required 2-minute practical video first. Week videos are optional.",
+                "error": "Only the Final Practical Video Assessment and Private Marks are mandatory. Weekly Practical Video Assessments and Private Marks are optional.",
             }
         ), 400
     keys = [

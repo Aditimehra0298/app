@@ -1,4 +1,4 @@
-const CACHE = "sf-training-v9";
+const CACHE = "sf-training-v10";
 const ASSETS = ["/static/icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {
@@ -16,10 +16,25 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
   const url = new URL(e.request.url);
-  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/generated/") || url.pathname.startsWith("/verify/") || url.pathname.startsWith("/qr/")) return;
+  if (
+    url.pathname.startsWith("/api/") ||
+    url.pathname.startsWith("/generated/") ||
+    url.pathname.startsWith("/verify") ||
+    url.pathname.startsWith("/qr/") ||
+    url.pathname.startsWith("/assets/")
+  ) {
+    return;
+  }
 
-  // Keep the app shell fresh: always prefer network for the root document.
-  if (url.origin === self.location.origin && (url.pathname === "/" || url.pathname === "/index.html")) {
+  // Keep the app shell fresh: always prefer network for HTML documents.
+  if (
+    url.origin === self.location.origin &&
+    (url.pathname === "/" ||
+      url.pathname === "/index.html" ||
+      url.pathname === "/home" ||
+      url.pathname === "/students" ||
+      e.request.mode === "navigate")
+  ) {
     e.respondWith(
       fetch(e.request)
         .then((res) => {
@@ -35,15 +50,14 @@ self.addEventListener("fetch", (e) => {
   }
 
   e.respondWith(
-    caches.match(e.request).then((cached) => {
-      const fetched = fetch(e.request).then((res) => {
+    fetch(e.request)
+      .then((res) => {
         if (res.ok && url.origin === self.location.origin) {
           const clone = res.clone();
           caches.open(CACHE).then((c) => c.put(e.request, clone));
         }
         return res;
-      }).catch(() => cached);
-      return cached || fetched;
-    })
+      })
+      .catch(() => caches.match(e.request))
   );
 });

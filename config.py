@@ -1,10 +1,11 @@
 """Sustainable Futures Training — steps, trade assessment, and app branding."""
 
 APP_BRAND = {
-    "name": "SFT Global Skill Assessment Council",
+    "name": "Global Skill Assessment Council",
     "short_name": "SFT",
+    "organization": "Sustainable Futuristic Trainings LLC",
     "tagline": "Assessing Skills. Validating Competence.",
-    "powered_by": "SFT Global Skill Assessment Council",
+    "powered_by": "Sustainable Futuristic Trainings LLC",
     "theme_color": "#0d4f3c",
     "accent_color": "#14b8a6",
 }

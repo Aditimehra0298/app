@@ -50,18 +50,21 @@ function syncViewportHeight() {
   const viewport = window.visualViewport
   const layoutHeight = window.innerHeight
   const visibleHeight = Math.round(viewport?.height ?? layoutHeight)
-  rootEl.style.setProperty('--app-height', `${visibleHeight}px`)
-  const heightDelta = layoutHeight - visibleHeight
+  const offsetTop = Math.round(viewport?.offsetTop ?? 0)
+  // Keep shell at layout height so the keyboard overlays instead of crushing the UI
+  rootEl.style.setProperty('--app-height', `${layoutHeight}px`)
+  const keyboardInset = Math.max(0, layoutHeight - visibleHeight - offsetTop)
+  rootEl.style.setProperty('--keyboard-inset', `${keyboardInset}px`)
   const focusedField = isFormField(document.activeElement)
-  const keyboardLikely = heightDelta > 60 || (focusedField && heightDelta > 24)
-  body.classList.toggle('keyboard-open', keyboardLikely || focusedField)
+  const keyboardLikely = focusedField && keyboardInset > 80
+  body.classList.toggle('keyboard-open', keyboardLikely)
 }
 
 function scrollFieldIntoView(target: EventTarget | null) {
   if (!isFormField(target)) return
   window.setTimeout(() => {
-    target.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  }, 280)
+    target.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' })
+  }, 120)
 }
 
 syncViewportHeight()
@@ -72,8 +75,9 @@ document.addEventListener(
   'focusin',
   (event) => {
     if (!isFormField(event.target)) return
-    body.classList.add('keyboard-open')
     syncViewportHeight()
+    // Re-check after the keyboard animates open
+    window.setTimeout(syncViewportHeight, 300)
     scrollFieldIntoView(event.target)
   },
   true,
@@ -85,9 +89,10 @@ document.addEventListener(
     keyboardCloseTimer = window.setTimeout(() => {
       if (!isFormField(document.activeElement)) {
         body.classList.remove('keyboard-open')
+        rootEl.style.setProperty('--keyboard-inset', '0px')
       }
       syncViewportHeight()
-    }, 120)
+    }, 160)
   },
   true,
 )
@@ -100,6 +105,6 @@ createRoot(document.getElementById('root')!).render(
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js?v=9').catch(() => {})
+    navigator.serviceWorker.register('/sw.js?v=10').catch(() => {})
   })
 }

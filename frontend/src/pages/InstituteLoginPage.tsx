@@ -55,27 +55,27 @@ export function InstituteLoginPage() {
         <img src={splash} alt="" className="absolute inset-0 h-full w-full object-cover" />
         <div className="absolute inset-0 bg-black/55" />
 
-        <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-y-auto px-[var(--pad-x)] pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-[max(env(safe-area-inset-top),1.5rem)] [-webkit-overflow-scrolling:touch]">
-          <div className="mb-5 shrink-0 text-center text-white">
+        <div className="login-scroll relative z-10 flex min-h-0 flex-1 flex-col overflow-y-auto px-[var(--pad-x)] pb-[max(env(safe-area-inset-bottom),1.25rem)] pt-[max(env(safe-area-inset-top),1.5rem)] [-webkit-overflow-scrolling:touch]">
+          <div className="login-brand mb-5 shrink-0 text-center text-white">
             <img
               src={LOGIN_LOGO}
               alt="Sustainable Futuristic Trainings"
-              className="mx-auto h-[clamp(9rem,42vw,12rem)] w-[clamp(9rem,42vw,12rem)] object-contain"
+              className="login-brand-logo mx-auto h-[clamp(9rem,42vw,12rem)] w-[clamp(9rem,42vw,12rem)] object-contain"
             />
-            <p className="mt-3 text-[clamp(0.78rem,3.4vw,0.92rem)] font-semibold uppercase tracking-[0.08em] text-white/85">
-              Sustainable Futuristic Trainings LLC
-            </p>
-            <h1 className="mt-1.5 font-display text-[clamp(0.95rem,4vw,1.15rem)] font-bold leading-snug text-white">
+            <h1 className="mt-3 font-display text-[clamp(0.95rem,4vw,1.15rem)] font-bold uppercase leading-snug text-white">
               Global Skill Assessment Council
             </h1>
-            <p className="mt-1 text-xs tracking-wide text-white/65">
+            <p className="mt-1.5 text-[clamp(0.65rem,2.8vw,0.78rem)] font-semibold uppercase tracking-[0.08em] text-white/85">
+              Sustainable Futuristic Trainings LLC
+            </p>
+            <p className="login-brand-tagline mt-1 text-xs tracking-wide text-white/65">
               {brand?.tagline ?? 'Assessing Skills. Validating Competence.'}
             </p>
           </div>
 
           <form
             onSubmit={handleLogin}
-            className="rounded-2xl border border-white/15 bg-black/35 p-5 shadow-2xl backdrop-blur-md"
+            className="login-form shrink-0 rounded-2xl border border-white/15 bg-black/35 p-5 shadow-2xl backdrop-blur-md"
           >
             <h2 className="font-display text-lg font-bold text-white">Institute login</h2>
             <p className="mt-1 mb-4 text-xs text-white/65">
@@ -90,7 +90,7 @@ export function InstituteLoginPage() {
                 value={uid}
                 onChange={(e) => setUid(e.target.value.toUpperCase())}
                 autoComplete="username"
-                autoFocus
+                enterKeyHint="next"
               />
             </label>
             <label className="mt-3.5 block">

@@ -816,7 +816,7 @@ export function TrainingDetailPage() {
                         Upload videos for {student.name}
                       </p>
                       <p className="text-[0.65rem] text-slate-500">
-                        Week videos are optional. Only the final practical video is required.
+                        Only the Final Practical Video Assessment and Private Marks are mandatory. Weekly Practical Video Assessments and Private Marks are optional.
                       </p>
                       {videos.map((video) => {
                         const uploadKey = `${student.uid}:${video.id}`

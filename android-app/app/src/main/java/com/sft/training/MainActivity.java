@@ -29,6 +29,9 @@ import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import java.io.File;
 import java.io.IOException;
@@ -100,13 +103,11 @@ public class MainActivity extends Activity {
                     return true;
                 }
                 String host = uri.getHost();
+                // Live GCE site only (Play Store WebView).
                 if (host != null && (
                         host.equalsIgnoreCase("assessment.sftlms.com")
                         || host.equalsIgnoreCase("sftlms.com")
                         || host.equalsIgnoreCase("www.sftlms.com")
-                        || host.contains("pythonanywhere.com")
-                        || host.equals("127.0.0.1")
-                        || host.equals("localhost")
                 )) {
                     return false;
                 }
@@ -172,6 +173,21 @@ public class MainActivity extends Activity {
         });
 
         webView.setOnLongClickListener((View v) -> true);
+
+        ViewCompat.setOnApplyWindowInsetsListener(webView, (view, windowInsets) -> {
+            Insets ime = windowInsets.getInsets(WindowInsetsCompat.Type.ime());
+            String js =
+                    "(function(){"
+                            + "var ime=" + ime.bottom + ";"
+                            + "var h=Math.round((window.visualViewport&&window.visualViewport.height)"
+                            + "||Math.max(0,window.innerHeight-ime));"
+                            + "document.documentElement.style.setProperty('--app-height',h+'px');"
+                            + "if(ime>0){document.body.classList.add('keyboard-open');}"
+                            + "else{document.body.classList.remove('keyboard-open');}"
+                            + "})();";
+            webView.post(() -> webView.evaluateJavascript(js, null));
+            return windowInsets;
+        });
     }
 
     private void openFileChooser(WebChromeClient.FileChooserParams params) {

@@ -318,7 +318,6 @@ export function VerifyPage() {
   const videos = (videosUnlocked && unlockedVideos ? unlockedVideos : data?.videos) ?? []
   const showLanding = !data?.found
   const unlockLabel = data?.unlock?.label || '$10'
-  const pdfReady = Boolean(data?.pdfReady || data?.downloadUrl || data?.pdfUrl || downloadUrl)
   const activeDownloadUrl = downloadUrl || data?.downloadUrl || data?.pdfUrl || null
 
   const applyUnlock = (payload: {
@@ -455,8 +454,8 @@ export function VerifyPage() {
               <p className="text-[0.62rem] font-bold uppercase leading-snug tracking-[0.06em] text-emerald-950 sm:text-xs lg:text-[0.8rem]">
                 {councilName}
               </p>
-              <p className="verify-gold mt-1 text-[0.55rem] font-semibold uppercase tracking-[0.18em] sm:text-[0.62rem]">
-                Official Certificate Verification
+              <p className="mt-1 text-[0.72rem] font-medium leading-snug tracking-wide text-emerald-800/80 sm:text-sm">
+                {tagline}
               </p>
             </div>
           </div>
@@ -704,18 +703,28 @@ export function VerifyPage() {
                         Unlock grade, certificate download + training videos for {unlockLabel}
                       </p>
                       <p className="mt-1 text-xs text-slate-500">
-                        One {unlockLabel} payment for India and international users. Unlocks grade
-                        {pdfReady ? ', PDF download,' : ''} and all training videos (UPI, cards, netbanking, wallets).
+                        India and international users need to pay {unlockLabel} (one-time) to unlock and view
+                        grades, certificate PDF download, and to view all training assessment videos. (UPI,
+                        cards, netbanking, wallets).
                       </p>
                       <label className="mt-3 block">
                         <span className="mb-1 block text-[0.65rem] font-bold uppercase tracking-wide text-slate-400">
                           Receipt email (optional)
                         </span>
                         <input
-                          type="email"
+                          type="text"
+                          inputMode="email"
+                          name="receipt-email-optional"
+                          id="receipt-email-optional"
                           value={payerEmail}
                           onChange={(e) => setPayerEmail(e.target.value)}
-                          placeholder={student?.email || 'name@example.com'}
+                          placeholder="Enter email for receipt"
+                          autoComplete="off"
+                          autoCorrect="off"
+                          autoCapitalize="off"
+                          spellCheck={false}
+                          data-lpignore="true"
+                          data-form-type="other"
                           className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none ring-emerald-700/30 focus:ring-2"
                         />
                       </label>
