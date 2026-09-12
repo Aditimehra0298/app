@@ -8,14 +8,32 @@ function apiUrl(url: string) {
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(apiUrl(url), {
-    credentials: API_BASE ? 'omit' : 'same-origin',
-    ...options,
-  })
-  const data = await res.json().catch(() => ({}))
+  let res: Response
+  try {
+    res = await fetch(apiUrl(url), {
+      credentials: API_BASE ? 'omit' : 'same-origin',
+      ...options,
+    })
+  } catch {
+    throw new Error('Network error. Check your connection and try again.')
+  }
+
+  const contentType = res.headers.get('content-type') || ''
+  const data = contentType.includes('application/json')
+    ? ((await res.json().catch(() => ({}))) as { error?: string; message?: string })
+    : ({} as { error?: string; message?: string })
+
   if (!res.ok) {
-    const err = data as { error?: string; message?: string }
-    throw new Error(err.error || err.message || 'Request failed')
+    if (res.status === 413) {
+      throw new Error('Video file is too large for the server. Use a shorter clip (under 2 minutes) or compress the video.')
+    }
+    if (res.status === 502 || res.status === 504) {
+      throw new Error('Upload timed out. Try a shorter video or a stronger network connection.')
+    }
+    if (res.status === 401) {
+      throw new Error(data.error || data.message || 'Session expired. Please log in again.')
+    }
+    throw new Error(data.error || data.message || `Request failed (${res.status})`)
   }
   return data as T
 }

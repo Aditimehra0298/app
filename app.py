@@ -201,6 +201,16 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SECURE"] = os.environ.get("PUBLIC_BASE_URL", "").startswith("https")
 
 
+@app.errorhandler(413)
+def _request_entity_too_large(_err):
+    return jsonify(
+        {
+            "success": False,
+            "error": "Video file is too large. Maximum upload size is 300 MB. Use a shorter 1–2 minute clip.",
+        }
+    ), 413
+
+
 @app.after_request
 def _cors_sftlms_headers(resp):
     origin = str(request.headers.get("Origin") or "").rstrip("/")
